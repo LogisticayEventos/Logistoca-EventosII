@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logistica & Eventos II | Control</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div id="toast-container"></div>
+    
+    <div id="floating-announcement" style="display: none;"></div>
+    
+    <div id="modal-carnet" class="modal">
+        <div class="modal-content">
+            <button class="close-modal" onclick="cerrarModal()"><i class="fa-solid fa-xmark"></i></button>
+            <div id="carnet-detalle-render"></div>
+        </div>
+    </div>
+
+    <div id="modal-gestion-boletas" class="modal">
+        <div class="modal-content" style="max-width: 450px;">
+            <button class="close-modal" onclick="cerrarModalGestion()"><i class="fa-solid fa-xmark"></i></button>
+            <div id="gestion-boletas-render"></div>
+        </div>
+    </div>
+
+    <div id="modal-pago" class="modal">
+        <div class="modal-content" style="max-width: 380px; max-height: 90vh; overflow-y: auto;">
+            <button class="close-modal" onclick="document.getElementById('modal-pago').style.display='none'"><i class="fa-solid fa-xmark"></i></button>
+            <h3 style="color: var(--accent); margin-top: 0; margin-bottom: 15px; text-align: center;">PAGAR BOLETAS</h3>
+            
+            <p style="font-size:0.65rem; color:var(--text-main); font-weight:800; margin-top:0; text-align:center;">SOLICITAR ACTIVACIÓN DE BOLETAS</p>
+            
+            <div id="lista-boletas-pendientes-pago" style="margin-bottom: 10px;"></div>
+            
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 15px;">
+                <input type="number" id="pago-monto" placeholder="Cantidad que entrega ($)" style="padding: 10px; font-size: 0.7rem; width: 100%; box-sizing: border-box;">
+                
+                <select id="pago-metodo" style="padding: 10px; font-size: 0.7rem; width: 100%; box-sizing: border-box;">
+                    <option value="" disabled selected>Método de pago</option>
+                    <option value="Efectivo">Efectivo</option>
+                    <option value="Transferencia">Transferencia</option>
+                </select>
+                
+                <input type="text" id="pago-receptor" placeholder="Nombre de a quien le entrega" style="padding: 10px; font-size: 0.7rem; width: 100%; box-sizing: border-box;">
+                
+                <select id="pago-capacitacion" style="padding: 10px; font-size: 0.7rem; width: 100%; box-sizing: border-box;">
+                    <option value="" disabled selected>¿Asiste a capacitación de turismo?</option>
+                    <option value="Sí">Sí</option>
+                    <option value="No">No</option>
+                </select>
+            </div>
+            
+            <p style="font-size:0.55rem; color:var(--accent); font-weight:800; margin-bottom:5px; text-align:center;">FOTO DEL COMPROBANTE:</p>
+            <input type="file" id="input-comprobante-pago" accept="image/*" style="width: 100%; box-sizing: border-box; font-size: 0.6rem; padding: 10px; margin-bottom: 15px; background: rgba(0,0,0,0.5); border-radius: 8px;">
+            
+            <button class="btn-primary" id="btn-enviar-pago" onclick="enviarComprobantePago()" style="width: 100%; background: linear-gradient(135deg, #10b981, #059669); color: white;"><i class="fa-solid fa-cloud-arrow-up"></i> ENVIAR SOLICITUD</button>
+        </div>
+    </div>
+
+    <div class="main-wrapper">
+        <div id="view-auth">
+            <h2 style="margin:0; font-size: 1.4rem;">LOGISTICA &</h2>
+            <p style="color:var(--accent); font-weight:800; font-size:0.9rem; letter-spacing: 2px; text-shadow: 0 0 8px var(--accent-glow);">EVENTOS II</p>
+            <div id="auth-login" class="form-group" style="margin-top:20px;">
+                <input type="email" id="login-email" placeholder="Correo">
+                <input type="password" id="login-pass" placeholder="Contraseña">
+                <button class="btn-primary" onclick="handleLogin()">INGRESAR</button>
+                <p class="toggle-text" style="color:#94a3b8; text-align: center; margin-top: 10px;">¿Nuevo? <a href="#" onclick="toggleAuth('reg')" style="color:var(--accent);">Crear cuenta</a></p>
+            </div>
+            <div id="auth-register" class="form-group" style="display:none;">
+                <input type="text" id="reg-nombre" placeholder="Nombre">
+                <input type="text" id="reg-apellido" placeholder="Apellido">
+                <input type="email" id="reg-email" placeholder="Correo">
+                <input type="password" id="reg-pass" placeholder="Clave (6+ carac.)">
+                <select id="reg-color" class="dynamic-colors">
+                    <option value="" disabled selected>Color de Equipo</option>
+                </select>
+                <input type="text" id="reg-invite" placeholder="CÓDIGO DE ACCESO">
+                <button class="btn-primary" onclick="registrarConCodigo()">REGISTRARME</button>
+                <p class="toggle-text" style="color:#94a3b8; text-align: center; margin-top: 10px;"><a href="#" onclick="toggleAuth('login')" style="color:var(--accent);">Volver</a></p>
+            </div>
+        </div>
+
+        <div id="view-home" style="display:none; flex-direction:column; height:100%;">
+            <header>
+                <div id="user-rank-badge" class="badge-rank">---</div>
+                <h2 style="margin:0; font-size:0.9rem; letter-spacing: 1px; flex-grow: 1; text-align: center;">LOGISTICA & EVENTOS II</h2>
+                <div style="width: auto;">
+                    <select id="global-code-filter" class="dynamic-codes-filter" onchange="aplicarFiltroCodigoGlobal()" style="display:none;">
+                        <option value="Todos">★ TODOS LOS GRUPOS</option>
+                    </select>
+                </div>
+            </header>
+            <nav class="nav-menu">
+                <button onclick="showSection('comunicados')" class="nav-item" id="nav-comunicados"><i class="fa-solid fa-house"></i> INICIO</button>
+                <button onclick="showSection('boletas-ins')" class="nav-item" id="nav-boletas-ins"><i class="fa-solid fa-ticket"></i> VENTA</button>
+                <button onclick="showSection('boletas-list')" class="nav-item" id="nav-boletas-list"><i class="fa-solid fa-list-ul"></i> LISTA</button>
+                <button onclick="showSection('perfil')" class="nav-item" id="nav-perfil"><i class="fa-solid fa-user"></i> PERFIL</button>
+                <button onclick="showSection('usuarios-adm')" class="nav-item" id="nav-usuarios-adm" style="display:none;"><i class="fa-solid fa-users"></i> PERSONAL</button>
+                <button onclick="showSection('administracion')" class="nav-item" id="nav-administracion" style="display:none;"><i class="fa-solid fa-gear"></i> ADMIN</button>
+            </nav>
+            <div class="content-scroll">
+                <section id="sec-comunicados" class="section-content">
+                    <div id="admin-com-form" style="display:none;" class="form-group admin-panel-lite">
+                        <input type="text" id="com-titulo" placeholder="Título">
+                        <textarea id="com-mensaje" placeholder="Mensaje..."></textarea>
+                        <div class="color-selector-mini" id="com-destinatarios-list">
+                            <label><input type="checkbox" name="dest-color" value="Todos" checked><span>TODOS</span></label>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                            <input type="date" id="com-fecha-ev">
+                            <input type="time" id="com-hora-ev">
+                        </div>
+                        <input type="text" id="com-lugar-ev" placeholder="Lugar">
+                        <input type="url" id="com-link-doc" placeholder="Link de documento">
+                        <button class="btn-primary" onclick="publicarComunicado()">PUBLICAR</button>
+                    </div>
+                    <div id="comunicados-list"></div>
+                </section>
+
+                <section id="sec-boletas-ins" class="section-content">
+                    <div class="form-group">
+                        <input type="text" id="ins-rec-nom" placeholder="Nombre y Apellido del Recreador">
+                        <input type="text" id="ins-n-boleta" placeholder="Número de Boleta">
+                        <input type="text" id="ins-com-nom" placeholder="Nombre y Apellido del Comprador">
+                        <input type="tel" id="ins-com-tel" placeholder="WhatsApp Comprador">
+                        <button class="btn-primary" onclick="inscribirBoleta()">REGISTRAR VENTA</button>
+                    </div>
+                </section>
+
+                <section id="sec-boletas-list" class="section-content">
+                    <div id="container-buscador-global" class="form-group" style="display: none; margin-bottom: 20px; border: 1px solid var(--accent); padding: 15px; border-radius: 20px; background: rgba(0, 240, 255, 0.05);">
+                        <p class="label-hint" style="text-align: center; color: var(--accent); font-weight: 900;">BUSCADOR GLOBAL DE BOLETA (PREMIOS)</p>
+                        <div style="display: flex; gap: 8px; justify-content: center;">
+                            <input type="text" id="search-n-boleta" placeholder="Ingresa N° de Boleta" style="flex-grow: 1;">
+                            <button class="btn-mini" style="width: max-content;" onclick="buscarDuenioBoleta()">BUSCAR</button>
+                        </div>
+                        <div id="resultado-busqueda-boleta" style="margin-top: 10px; display: none;"></div>
+                    </div>
+
+                    <div id="panel-boletas-entregadas" class="form-group" style="margin-bottom: 20px; border: 1px solid rgba(0,240,255,0.2); padding: 15px; border-radius: 20px; background: rgba(30, 41, 59, 0.5);">
+                        <p class="label-hint" style="text-align: center;">REGISTRAR BOLETAS ENTREGADAS (FÍSICAS)</p>
+                        <div style="display: flex; gap: 8px; justify-content: center;">
+                            <input type="text" id="input-boleta-entregada" placeholder="N° Boleta" style="flex-grow: 1;">
+                            <button class="btn-mini btn-add" style="width: max-content;" onclick="registrarBoletaEntregada()"><i class="fa-solid fa-plus"></i></button>
+                        </div>
+                        <div id="lista-entregadas-tags" class="teams-flex-container" style="margin-top: 10px;"></div>
+                    </div>
+
+                    <div class="filter-bar">
+                        <select id="filter-color" onchange="renderBoletas()" class="dynamic-colors" style="display:none;">
+                            <option value="Todos">Todos los Equipos</option>
+                        </select>
+                        <select id="filter-estado" onchange="renderBoletas()">
+                            <option value="Todos">Todos los Estados</option>
+                            <option value="Activa">Activa</option>
+                            <option value="Pendiente">Pendiente</option>
+                        </select>
+                    </div>
+
+                    <button id="btn-rep-ventas" class="btn-excel" style="display:none;" onclick="exportarVentasExcel()">REPORTE VENTAS (EXCEL)</button>
+
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>N°</th>
+                                    <th>Equipo</th>
+                                    <th>Recreador</th>
+                                    <th>Entregadas</th>
+                                    <th>Vendidas</th>
+                                    <th>Fecha</th>
+                                    <th>Acción</th>
+                                </tr>
+                            </thead>
+                            <tbody id="lista-boletas-body"></tbody>
+                        </table>
+                    </div>
+                    
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 15px; padding-bottom: 5px;">
+                        <div id="conteo-boletas-total" class="total-count-display" style="margin-top: 0; padding-right: 0;">Total registros: 0</div>
+                        <button id="btn-flotante-pago" class="btn-flotante-pago" onclick="gestionarEnlacePago()">
+                            <i class="fa-solid fa-money-check-dollar"></i> PAGAR BOLETAS
+                        </button>
+                    </div>
+                </section>
+
+                <section id="sec-perfil" class="section-content">
+                    <div class="id-card-mini">
+                        <div class="avatar-circle" id="p-initials">S</div>
+                        <h3 id="p-full-name">---</h3>
+                        <p id="p-rango-view" class="badge-rango-perfil">---</p>
+                        <div class="id-card-details">
+                            <div class="id-detail-item"><span class="detail-label">EQUIPO</span><span id="p-equipo-view" class="detail-value">---</span></div>
+                            <div class="id-detail-item"><span class="detail-label">DOCUMENTO</span><span id="p-doc-view" class="detail-value">---</span></div>
+                            <div class="id-detail-item"><span class="detail-label">WHATSAPP</span><span id="p-tel-view" class="detail-value">---</span></div>
+                            <div class="id-detail-item"><span class="detail-label">NACIMIENTO</span><span id="p-nac-view" class="detail-value">---</span></div>
+                            <div class="id-detail-item"><span class="detail-label">EDAD</span><span id="p-edad-view" class="detail-value">---</span></div>
+                            <div class="id-detail-item"><span class="detail-label">ÚLTIMA CONEXIÓN</span><span id="p-conexion-view" class="detail-value">---</span></div>
+                        </div>
+                        <div class="card-brand-footer">LOGISTICA & EVENTOS II</div>
+                    </div>
+                    <div id="perfil-edit-form" class="form-group" style="display:none; margin-top:15px;">
+                        <input type="number" id="edit-doc" placeholder="Documento de Identidad">
+                        <input type="tel" id="edit-tel" placeholder="WhatsApp">
+                        <input type="date" id="edit-nacimiento">
+                        <select id="edit-color" class="dynamic-colors">
+                            <option value="Verde">Verde</option>
+                            <option value="Naranja">Naranja</option>
+                            <option value="Morado">Morado</option>
+                            <option value="Azul">Azul</option>
+                        </select>
+                        <button class="btn-primary" onclick="guardarPerfil()">GUARDAR DATOS</button>
+                    </div>
+                </section>
+
+                <section id="sec-usuarios-adm" class="section-content">
+                    <div class="filter-bar">
+                        <input type="text" id="search-user" placeholder="Buscar por Nombre/Cédula..." oninput="listenUsuariosAdm()">
+                        <select id="filter-user-color" class="dynamic-colors" onchange="listenUsuariosAdm()">
+                            <option value="Todos">Todos los Equipos</option>
+                        </select>
+                    </div>
+                    <button id="btn-rep-personal" class="btn-excel" style="display:none;" onclick="exportarPersonalExcel()">REPORTE PERSONAL (EXCEL)</button>
+                    <div class="table-container" style="overflow-x: auto;">
+                        <table style="min-width: 850px;">
+                            <thead>
+                                <tr>
+                                    <th>Rango</th>
+                                    <th>Nombre y Apellido</th>
+                                    <th>Edad</th>
+                                    <th>Documento</th>
+                                    <th>WhatsApp</th>
+                                    <th>Equipo</th>
+                                    <th>Registro</th>
+                                    <th class="col-rango-permiso">Inscripción</th>
+                                    <th class="col-rango-admin">Cambiar Rango</th>
+                                    <th class="col-rango-admin">Eliminar</th>
+                                </tr>
+                            </thead>
+                            <tbody id="lista-usuarios-body"></tbody>
+                        </table>
+                    </div>
+                    <div id="conteo-personal-total" class="total-count-display">Total personal: 0</div>
+                </section>
+
+                <section id="sec-administracion" class="section-content">
+                    <div class="grid-admin">
+                        
+                        <div class="admin-card full-width" style="background: rgba(16, 185, 129, 0.05); border-color: rgba(16, 185, 129, 0.3);">
+                            <p class="admin-card-title" style="color: #10b981; text-align: center;"><i class="fa-solid fa-chart-pie"></i> RESUMEN GENERAL</p>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; text-align: center;">
+                                <div style="background: rgba(0,0,0,0.3); padding: 15px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+                                    <p style="margin: 0; font-size: 0.55rem; color: #cbd5e1; font-weight: 800; letter-spacing: 1px;">PERSONAL REGISTRADO</p>
+                                    <h2 id="admin-tot-personal" style="margin: 5px 0 0 0; color: white; font-size: 1.8rem;">0</h2>
+                                </div>
+                                <div style="background: rgba(0,0,0,0.3); padding: 15px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+                                    <p style="margin: 0; font-size: 0.55rem; color: #cbd5e1; font-weight: 800; letter-spacing: 1px;">BOLETAS VENDIDAS</p>
+                                    <h2 id="admin-tot-boletas" style="margin: 5px 0 0 0; color: white; font-size: 1.8rem;">0</h2>
+                                    <p style="margin: 5px 0 0 0; font-size: 0.55rem; color: #94a3b8; font-weight: 800;">
+                                        <span style="color:#10b981;" id="admin-tot-activas">0</span> Activas | 
+                                        <span style="color:#f59e0b;" id="admin-tot-pendientes">0</span> Pendientes
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="admin-card full-width" style="border-color: rgba(16, 185, 129, 0.5);">
+                            <p class="admin-card-title" style="color: #10b981;"><i class="fa-solid fa-money-bill-transfer"></i> VALIDACIÓN DE PAGOS</p>
+                            <div id="admin-pagos-list" style="display: flex; flex-direction: column; gap: 10px;">
+                                </div>
+                            
+                            <button class="btn-mini" onclick="toggleHistorialPagos()" style="width: 100%; margin-top: 15px; justify-content: center; background: rgba(255,255,255,0.05); color: white; border-color: rgba(255,255,255,0.2);">
+                                <i class="fa-solid fa-clock-rotate-left"></i> VER HISTORIAL DE PAGOS
+                            </button>
+                            
+                            <div id="admin-pagos-historial-wrapper" style="display: none; flex-direction: column; gap: 10px; margin-top: 15px; border-top: 1px dashed rgba(255,255,255,0.2); padding-top: 15px;">
+                                <button class="btn-mini btn-delete" onclick="borrarTodoHistorialPagos()" style="width: 100%; justify-content: center; margin-bottom: 5px;">
+                                    <i class="fa-solid fa-trash-can"></i> VACIAR TODO EL HISTORIAL
+                                </button>
+                                <div id="admin-pagos-historial" style="display: flex; flex-direction: column; gap: 10px;">
+                                    </div>
+                            </div>
+                        </div>
+
+                        <div id="admin-floating-announcement" class="admin-card full-width" style="border-color: rgba(245, 158, 11, 0.5);">
+                            <p class="admin-card-title" style="color: #f59e0b; text-align: center;"><i class="fa-solid fa-bullhorn"></i> LANZAR ANUNCIO FLOTANTE</p>
+                            <div class="form-group">
+                                <input type="text" id="admin-anuncio-texto" placeholder="Escribe el mensaje corto del anuncio aquí..." style="border-color: #f59e0b;">
+                                <div style="display: flex; gap: 10px;">
+                                    <select id="admin-anuncio-color" style="flex: 2; border-color: #f59e0b;">
+                                        <option value="#ff007a">Magenta Impacto</option>
+                                        <option value="#00f0ff">Cyan Neón</option>
+                                        <option value="#10b981">Esmeralda Positivo</option>
+                                        <option value="#f59e0b">Ámbar Alerta</option>
+                                        <option value="#ef4444">Rojo Peligro</option>
+                                    </select>
+                                    <input type="number" id="admin-anuncio-duracion" placeholder="Segundos" value="10" style="flex: 1; border-color: #f59e0b;" min="1">
+                                </div>
+                                
+                                <div style="display: flex; gap: 10px;">
+                                    <input type="number" id="admin-anuncio-intervalo" placeholder="Intervalo (Minutos)" style="flex: 1; border-color: #f59e0b;" min="1">
+                                    <input type="number" id="admin-anuncio-cantidad" placeholder="Cantidad de veces" style="flex: 1; border-color: #f59e0b;" min="1">
+                                </div>
+                                <div style="display: flex; flex-direction: column; gap: 5px;">
+                                    <label class="label-hint" style="color: #f59e0b;">MOSTRAR HASTA LA FECHA/HORA:</label>
+                                    <input type="datetime-local" id="admin-anuncio-fecha" style="border-color: #f59e0b; width: 100%; box-sizing: border-box;">
+                                </div>
+
+                                <button class="btn-primary" onclick="publicarAnuncioFlotante()" style="background: linear-gradient(135deg, #f59e0b, #ea580c); color: #fff; width: 100%;"><i class="fa-solid fa-paper-plane"></i> LANZAR EN PANTALLA</button>
+                            </div>
+                        </div>
+
+                        <div id="admin-edit-panel-code" class="admin-card">
+                            <p class="admin-card-title">CÓDIGOS DE ACCESO (REGISTRO)</p>
+                            <div class="form-group">
+                                <div style="display: flex; gap: 5px; justify-content: center;">
+                                    <input type="text" id="new-invite-code" placeholder="Nuevo Código" style="flex-grow: 1;">
+                                    <button class="btn-mini btn-add" onclick="actualizarCodigoInvitacion()"><i class="fa-solid fa-plus"></i></button>
+                                </div>
+                                <div id="admin-invite-codes-list" class="teams-flex-container"></div>
+                            </div>
+                        </div>
+                        
+                        <div id="admin-delete-staff-code-panel" class="admin-card" style="display: none;">
+                            <p class="admin-card-title" style="color: #ef4444;"><i class="fa-solid fa-users-slash"></i> ELIMINAR PERSONAL POR CÓDIGO</p>
+                            <div class="form-group">
+                                <select id="del-staff-code-select" style="background: rgba(239, 68, 68, 0.1); border-color: #ef4444; color: white;">
+                                    <option value="" disabled selected>Selecciona un código</option>
+                                </select>
+                                <button class="btn-mini btn-delete" onclick="eliminarPersonalPorCodigo()">ELIMINAR USUARIOS CON ESTE CÓDIGO</button>
+                                <p style="font-size: 0.45rem; color: #ef4444; font-weight: 800; margin-top: 5px; text-align: center;">* ESTO BORRARÁ DEFINITIVAMENTE AL PERSONAL QUE SE INSCRIBIÓ USANDO EL CÓDIGO SELECCIONADO.</p>
+                            </div>
+                        </div>
+
+                        <div id="admin-delete-range-panel" class="admin-card" style="display: none;">
+                            <p class="admin-card-title" style="color: #ef4444;"><i class="fa-solid fa-calendar-xmark"></i> LIMPIAR BOLETAS POR FECHA</p>
+                            <div class="form-group" style="display: flex; flex-direction: column; gap: 10px;">
+                                <div style="display: flex; gap: 5px;">
+                                    <div style="flex:1;">
+                                        <label class="label-hint">DESDE:</label>
+                                        <input type="date" id="del-bol-inicio" class="mini-input" style="width: 100%; box-sizing: border-box;">
+                                    </div>
+                                    <div style="flex:1;">
+                                        <label class="label-hint">HASTA:</label>
+                                        <input type="date" id="del-bol-fin" class="mini-input" style="width: 100%; box-sizing: border-box;">
+                                    </div>
+                                </div>
+                                <button class="btn-mini btn-delete" onclick="eliminarBoletasPorRango()">ELIMINAR BOLETAS EN ESTE RANGO</button>
+                                <p style="font-size: 0.45rem; color: #ef4444; font-weight: 800; text-align: center; margin: 0;">* LAS BOLETAS YA JUGADAS SE BORRARÁN PERMANENTEMENTE</p>
+                            </div>
+                        </div>
+
+                        <div class="admin-card full-width">
+                            <p class="admin-card-title">DESGLOSE POR EQUIPOS</p>
+                            <div class="grid-summary-details">
+                                <div id="resumen-boletas-equipos" class="summary-list"></div>
+                                <div id="resumen-personal-equipos" class="summary-list"></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+            <button onclick="handleLogout()" class="btn-logout">CERRAR SESIÓN</button>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
