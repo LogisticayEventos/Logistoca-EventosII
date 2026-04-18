@@ -1,10 +1,10 @@
 const firebaseConfig = {
-    apiKey: "AIzaSyAD_FPhpmmbuvnXUxKVlNpENdViPTIBaYU",
-    authDomain: "sentinels-web.firebaseapp.com",
-    projectId: "sentinels-web",
-    storageBucket: "sentinels-web.firebasestorage.app",
-    messagingSenderId: "565758042156",
-    appId: "1:565758042156:web:2f63fe53f974acc43af189"
+  apiKey: "AIzaSyCZeH_9OisAUxfLOexqCRqLMH6wKHJvbrM",
+  authDomain: "logistica-y-eventos-ii.firebaseapp.com",
+  projectId: "logistica-y-eventos-ii",
+  storageBucket: "logistica-y-eventos-ii.firebasestorage.app",
+  messagingSenderId: "260991887567",
+  appId: "1:260991887567:web:e19c589a8545407786afba"
 };
 
 firebase.initializeApp(firebaseConfig);
