@@ -86,6 +86,8 @@ const photoCanvas = $("photoCanvas");
 const photoContext = photoCanvas.getContext("2d");
 const credentialCanvas = $("credentialCanvas");
 const credentialContext = credentialCanvas.getContext("2d");
+const credentialLogo = new Image();
+let credentialLogoPromise = null;
 
 let questions = clone(DEFAULT_QUESTIONS);
 let currentStep = 1;
@@ -398,7 +400,14 @@ function drawCenteredField(context,label,value,labelY,valueY,maxWidth,start=31,m
   context.fillStyle="#ffffff";fitText(context,String(value||"NO REGISTRADO"),maxWidth,start,min,900);context.fillText(String(value||"NO REGISTRADO"),360,valueY);
 }
 
-function drawCredential() {
+function loadCredentialLogo() {
+  if(credentialLogo.complete&&credentialLogo.naturalWidth)return Promise.resolve(credentialLogo);
+  if(!credentialLogoPromise)credentialLogoPromise=new Promise((resolve)=>{credentialLogo.onload=()=>resolve(credentialLogo);credentialLogo.onerror=()=>resolve(null);credentialLogo.src="logo.png";});
+  return credentialLogoPromise;
+}
+
+async function drawCredential() {
+  const logo=await loadCredentialLogo();
   const ctx=credentialContext,w=credentialCanvas.width,h=credentialCanvas.height;
   const first=titleCase(answer("firstName")).toLocaleUpperCase("es");const last=titleCase(answer("lastName")).toLocaleUpperCase("es");const age=answer("age");const gender=String(answer("gender")).toLocaleUpperCase("es");const advisor=String(answer("advisor")).toLocaleUpperCase("es");const whatsapp=formatWhatsapp(answer("whatsapp"));
   const code=`LE-${(registrationId||answer("document")||Date.now()).replace(/[^a-z0-9]/gi,"").slice(-8).toUpperCase()}`;const date=new Intl.DateTimeFormat("es-CO").format(new Date());const accessUrl=recordAccessUrl();const qr=qrCanvas(accessUrl);
@@ -408,9 +417,11 @@ function drawCredential() {
   ctx.save();ctx.globalAlpha=.1;ctx.strokeStyle="#b6f4d5";ctx.lineWidth=2;for(let r=120;r<420;r+=52){ctx.beginPath();ctx.arc(665,80,r,0,Math.PI*2);ctx.stroke();}for(let r=100;r<310;r+=52){ctx.beginPath();ctx.arc(32,1370,r,0,Math.PI*2);ctx.stroke();}ctx.restore();
   ctx.fillStyle="rgba(255,255,255,.07)";roundedRect(ctx,28,28,w-56,h-56,34);ctx.fill();ctx.strokeStyle="rgba(255,255,255,.22)";ctx.lineWidth=2;ctx.stroke();
 
-  ctx.fillStyle="#ffffff";ctx.beginPath();ctx.arc(w/2,72,29,0,Math.PI*2);ctx.fill();ctx.fillStyle="#08734e";ctx.font="900 18px Arial";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("LE",w/2,73);
-  ctx.textBaseline="alphabetic";ctx.fillStyle="#ffffff";ctx.font="900 27px Arial";ctx.fillText("LOGÍSTICA & EVENTOS",w/2,128);ctx.fillStyle="#a8efd0";ctx.font="800 12px Arial";ctx.fillText("CARNÉ DE PRE-REGISTRO",w/2,157);
-  ctx.fillStyle="rgba(255,255,255,.12)";roundedRect(ctx,270,176,180,40,20);ctx.fill();ctx.fillStyle="#ffffff";ctx.font="800 13px Arial";ctx.fillText(code,w/2,202);
+  ctx.textAlign="center";
+  if(logo){ctx.save();ctx.shadowColor="rgba(0,18,12,.35)";ctx.shadowBlur=18;ctx.drawImage(logo,314,32,92,92);ctx.restore();}
+  else{ctx.fillStyle="#ffffff";ctx.beginPath();ctx.arc(w/2,76,29,0,Math.PI*2);ctx.fill();ctx.fillStyle="#08734e";ctx.font="900 18px Arial";ctx.textBaseline="middle";ctx.fillText("LE",w/2,77);}
+  ctx.textBaseline="alphabetic";ctx.fillStyle="#ffffff";ctx.font="900 27px Arial";ctx.fillText("LOGÍSTICA & EVENTOS",w/2,154);ctx.fillStyle="#a8efd0";ctx.font="800 12px Arial";ctx.fillText("CARNÉ DE PRE-REGISTRO",w/2,178);
+  ctx.fillStyle="rgba(255,255,255,.12)";roundedRect(ctx,270,184,180,40,20);ctx.fill();ctx.fillStyle="#ffffff";ctx.font="800 13px Arial";ctx.fillText(code,w/2,210);
 
   const clean=cleanPhotoCanvas(600,750);ctx.save();ctx.shadowColor="rgba(0,24,17,.3)";ctx.shadowBlur=26;roundedRect(ctx,198,240,324,405,26);ctx.fillStyle="rgba(1,36,25,.25)";ctx.fill();ctx.restore();ctx.save();roundedRect(ctx,200,238,320,400,24);ctx.clip();ctx.drawImage(clean,200,238,320,400);ctx.restore();ctx.strokeStyle="rgba(255,255,255,.85)";ctx.lineWidth=4;roundedRect(ctx,200,238,320,400,24);ctx.stroke();
 
@@ -500,11 +511,11 @@ function demoRecords() {
   ];
 }
 
-function showDemoCredential() {
+async function showDemoCredential() {
   if(!SHOW_DEMO_CREDENTIAL)return;
   const record=records.find((item)=>item.id==="DEMO-001")||demoRecords()[0];let values={};try{values=JSON.parse(record.answersJson||"{}");}catch{}
   restoreAnswers(values);const portrait=document.createElement("canvas");portrait.width=600;portrait.height=750;const ctx=portrait.getContext("2d");const gradient=ctx.createLinearGradient(0,0,0,750);gradient.addColorStop(0,"#e7f5ef");gradient.addColorStop(1,"#bdd8cc");ctx.fillStyle=gradient;ctx.fillRect(0,0,600,750);ctx.fillStyle="#6f9e8a";ctx.beginPath();ctx.arc(300,270,105,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.ellipse(300,675,210,230,0,Math.PI,0);ctx.fill();ctx.fillStyle="#ffffff";ctx.font="900 56px Arial";ctx.textAlign="center";ctx.fillText("AR",300,700);
-  photoState={image:portrait,zoom:1,panX:0,panY:0,dragging:false,pointerX:0,pointerY:0};registrationId="DEMO-001";drawCredential();updateWhatsappLink();$("formView").hidden=true;$("resultView").hidden=false;$("sendNotice").className="notice notice-success";$("sendNotice").querySelector("p").textContent="Vista de demostración: carné vertical con WhatsApp y QR protegido.";
+  photoState={image:portrait,zoom:1,panX:0,panY:0,dragging:false,pointerX:0,pointerY:0};registrationId="DEMO-001";await drawCredential();updateWhatsappLink();$("formView").hidden=true;$("resultView").hidden=false;$("sendNotice").className="notice notice-success";$("sendNotice").querySelector("p").textContent="Vista de demostración: carné vertical con WhatsApp, logo y QR protegido.";
 }
 
 async function submitRegistration(event) {
@@ -513,7 +524,7 @@ async function submitRegistration(event) {
   let saved=true;
   try { registrationId=await saveRegistration(); }
   catch(error){ saved=false;console.error(error);registrationId=`LOCAL-${String(Date.now()).slice(-7)}`; }
-  drawCredential();updateWhatsappLink();
+  await drawCredential();updateWhatsappLink();
   const notice=$("sendNotice");
   if(saved){notice.className="notice notice-success";notice.querySelector("p").textContent="Tu inscripción quedó guardada correctamente en el sistema.";}
   else{notice.className="notice notice-warning";notice.querySelector("p").textContent="El carné fue creado, pero el registro no pudo guardarse. Descárgalo y envíalo por WhatsApp para completar la inscripción.";}
@@ -759,8 +770,8 @@ function attachPhotoEvents() {
 }
 
 async function init() {
-  renderAllQuestions();drawPhotoPlaceholder();attachEvents();attachPhotoEvents();showStep(1,false);showConnection("Conectando con el sistema de inscripciones…");await initializeBackend();
-  if(LINKED_RECORD_ID)await openAdminAccess();else showDemoCredential();
+  renderAllQuestions();drawPhotoPlaceholder();attachEvents();attachPhotoEvents();showStep(1,false);showConnection("Conectando con el sistema de inscripciones…");await initializeBackend();await loadCredentialLogo();
+  if(LINKED_RECORD_ID)await openAdminAccess();else await showDemoCredential();
 }
 
 init();

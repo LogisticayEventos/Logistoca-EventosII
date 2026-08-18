@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#096b4a">
   <meta name="description" content="Formulario de inscripción de Logística & Eventos con carné digital y control administrativo.">
   <title>Inscripción | Logística & Eventos</title>
+  <link rel="icon" type="image/png" href="logo.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -14,7 +15,7 @@
 
   <header id="publicHeader" class="site-header">
     <a class="brand" href="#inicio" aria-label="Ir al inicio">
-      <span class="brand-mark" aria-hidden="true">LE</span>
+      <img class="brand-logo" src="logo.png" width="64" height="64" alt="Logo Equipo Verde de Logística y Eventos">
       <span class="brand-copy"><strong>LOGÍSTICA &amp; EVENTOS</strong><small>Registro de personal</small></span>
     </a>
     <div class="header-actions">
@@ -110,14 +111,14 @@
       <div class="credential-portrait-wrap"><canvas id="credentialCanvas" width="720" height="1440" aria-label="Carné vertical generado con código QR protegido"></canvas></div>
       <p id="qrPrivacyNote" class="qr-privacy-note"><span aria-hidden="true">🔒</span> El QR abre el registro completo y solicita acceso de administrador antes de mostrar los datos.</p>
       <div class="result-actions"><button class="button button-primary" type="button" id="downloadCredential">Descargar carné PNG</button><button class="button button-secondary" type="button" id="shareCredential">Compartir carné</button><a class="button button-whatsapp" id="whatsappButton" href="https://wa.me/573224343263" target="_blank" rel="noopener">Avisar por WhatsApp</a></div>
-      <section class="meeting-card" aria-labelledby="meetingTitle"><div class="meeting-date"><strong>22</strong><span>AGO</span></div><div class="meeting-copy"><span class="eyebrow">Reunión presencial</span><h2 id="meetingTitle">Sábado, 22 de agosto de 2026</h2><p><strong>Hora:</strong> 10:00 a. m.</p><p><strong>Lugar:</strong> Tv. 35 #39-11, frente a Centro Mayor</p><a href="https://maps.app.goo.gl/HZLNqHoF2fr8ng7k7" target="_blank" rel="noopener">Abrir ubicación →</a></div></section>
+      <section class="meeting-card" aria-labelledby="meetingTitle"><div class="meeting-date"><strong>22</strong><span>AGO</span></div><div class="meeting-copy"><span class="eyebrow">Reunión presencial</span><h2 id="meetingTitle">Sábado, 22 de agosto de 2026</h2><p><strong>Hora:</strong> 10:00 a. m.</p><p><strong>Lugar:</strong> Tv. 35 # 39-15 (frente al CC. Centro Mayor)</p><a href="https://maps.app.goo.gl/bqvmpLpgzoeiBWu97" target="_blank" rel="noopener">Abrir ubicación →</a></div></section>
       <div class="notice notice-warning result-warning"><span class="notice-icon">!</span><p>Este documento confirma el <strong>pre-registro</strong>. No reemplaza un documento de identidad ni acredita vínculo laboral.</p></div>
       <button class="text-button restart-button" type="button" id="restartButton">Realizar otro registro</button>
     </section>
 
     <section id="adminView" class="admin-shell" aria-labelledby="adminTitle" hidden>
       <header class="admin-header">
-        <div class="admin-brand"><span class="brand-mark">LE</span><div><span>CONTROL PRIVADO</span><h1 id="adminTitle">Inscripciones</h1></div></div>
+        <div class="admin-brand"><img class="admin-brand-logo" src="logo.png" width="58" height="58" alt="Logo Equipo Verde"><div><span>CONTROL PRIVADO</span><h1 id="adminTitle">Inscripciones</h1></div></div>
         <div class="admin-user"><span id="adminUserEmail"></span><button id="closeAdminButton" class="button button-ghost" type="button">Volver al formulario</button><button id="logoutAdminButton" class="icon-button danger" type="button" title="Cerrar sesión">↪</button></div>
       </header>
       <nav class="admin-tabs" aria-label="Secciones administrativas"><button class="is-active" type="button" data-admin-tab="dashboard">Resumen</button><button type="button" data-admin-tab="records">Registros</button><button type="button" data-admin-tab="questions">Preguntas</button></nav>

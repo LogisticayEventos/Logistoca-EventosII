@@ -48,6 +48,10 @@ a { color: inherit; }
   width: min(1120px, calc(100% - 40px)); min-height: 86px; margin: 0 auto;
 }
 .brand { display: inline-flex; gap: 12px; align-items: center; color: var(--ink); text-decoration: none; }
+.brand-logo {
+  display: block; flex: 0 0 64px; width: 64px; height: 64px; object-fit: contain;
+  filter: drop-shadow(0 9px 14px rgba(7,88,60,.22));
+}
 .brand-mark {
   display: grid; flex: 0 0 45px; width: 45px; height: 45px; place-items: center;
   color: #fff; border-radius: 14px; background: linear-gradient(145deg, #10a870, #07583c);
@@ -217,6 +221,7 @@ a { color: inherit; }
 .admin-shell { width: min(1220px,calc(100vw - 24px)); min-height: calc(100vh - 44px); margin: 22px auto; overflow: hidden; border: 1px solid #dce8e2; border-radius: 25px; background: #f6f9f7; box-shadow: var(--shadow); }
 .admin-header { display: flex; gap: 22px; align-items: center; justify-content: space-between; padding: 20px 25px; color: #fff; background: linear-gradient(120deg,#053e2c,#0a7550); }
 .admin-brand { display: flex; gap: 13px; align-items: center; }
+.admin-brand-logo { display: block; flex: 0 0 58px; width: 58px; height: 58px; object-fit: contain; filter: drop-shadow(0 8px 12px rgba(0,24,17,.24)); }
 .admin-brand .brand-mark { box-shadow: none; background: rgba(255,255,255,.16); }
 .admin-brand > div > span { display: block; margin-bottom: 3px; color: #9ee7c5; font-size: .63rem; font-weight: 850; letter-spacing: .13em; }
 .admin-brand h1 { margin: 0; font-size: 1.2rem; }
@@ -339,6 +344,7 @@ a { color: inherit; }
 }
 @media (max-width: 760px) {
   .site-header { width: min(100% - 28px,980px); min-height: 76px; }
+  .brand-logo { flex-basis: 54px; width: 54px; height: 54px; }
   .page-shell { width: min(100% - 20px,980px); margin-top: 8px; }
   .form-card, .result-card { border-radius: 22px; }
   .hero-copy { padding-top: 40px; padding-bottom: 37px; }
@@ -368,6 +374,8 @@ a { color: inherit; }
   .record-profile > img { width: 110px; height: 138px; }
 }
 @media (max-width: 540px) {
+  .brand { gap: 8px; }
+  .brand-logo { flex-basis: 48px; width: 48px; height: 48px; }
   .brand-copy strong { font-size: .75rem; }
   .brand-copy small, .status-pill { display: none; }
   .hero-badges span:last-child { display: none; }
