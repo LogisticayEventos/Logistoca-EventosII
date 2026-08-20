@@ -16,7 +16,7 @@
   <header id="publicHeader" class="site-header">
     <a class="brand" href="#inicio" aria-label="Ir al inicio">
       <img class="brand-logo" src="logo.png" width="64" height="64" alt="Logo Equipo Verde de Logística y Eventos">
-      <span class="brand-copy"><strong>LOGÍSTICA &amp; EVENTOS</strong><small>Registro de personal</small></span>
+      <span class="brand-copy"><strong id="brandName">LOGÍSTICA &amp; EVENTOS</strong><small id="brandSubtitle">Registro de personal</small></span>
     </a>
     <div class="header-actions">
       <span class="status-pill"><span class="status-dot"></span> Equipo Verde</span>
@@ -27,53 +27,59 @@
   <main id="inicio" class="page-shell">
     <section id="formView" class="form-card" aria-labelledby="pageTitle">
       <div class="hero-copy">
-        <span class="eyebrow">Inscripción de nuevos aspirantes</span>
+        <span class="eyebrow" id="heroEyebrow">Inscripción de nuevos aspirantes</span>
         <h1 id="pageTitle">Regístrate y recibe tu carné digital</h1>
-        <p>Completa tus datos, carga una foto tipo carné y descarga tu comprobante para presentarlo el día de la reunión.</p>
+        <p id="heroDescription">Completa tus datos, carga una foto tipo carné y descarga tu comprobante para presentarlo el día de la reunión.</p>
         <div class="hero-badges" aria-label="Características del proceso"><span>✓ Registro sencillo</span><span>✓ Información protegida</span><span>✓ Carné descargable</span></div>
       </div>
 
       <div id="connectionBanner" class="connection-banner" role="status" hidden><span aria-hidden="true">!</span><p id="connectionMessage">Conectando con el sistema de inscripciones…</p></div>
 
+      <section id="savedCredentialPanel" class="saved-credential-panel" aria-labelledby="savedCredentialTitle" hidden>
+        <span class="saved-credential-icon" aria-hidden="true">✓</span>
+        <div class="saved-credential-copy"><span>Carné guardado en este dispositivo</span><strong id="savedCredentialTitle">Tu carné sigue disponible</strong><small id="savedCredentialMeta"></small></div>
+        <div class="saved-credential-actions"><button id="restoreSavedCredentialButton" class="button button-secondary" type="button">Ver mi carné</button><button id="forgetSavedCredentialButton" class="text-button" type="button">Quitar de este dispositivo</button></div>
+      </section>
+
       <div class="progress-wrap" aria-label="Progreso del formulario">
         <div class="progress-meta"><span id="stepLabel">Paso 1 de 4</span><span id="progressPercent">25%</span></div>
         <div class="progress-track" aria-hidden="true"><span id="progressBar"></span></div>
         <ol class="step-list">
-          <li class="is-active" data-step-indicator="1"><span>1</span><small>Datos</small></li>
-          <li data-step-indicator="2"><span>2</span><small>Perfil</small></li>
-          <li data-step-indicator="3"><span>3</span><small>Disponibilidad</small></li>
-          <li data-step-indicator="4"><span>4</span><small>Foto y envío</small></li>
+          <li class="is-active" data-step-indicator="1"><span>1</span><small id="progressStep1">Datos</small></li>
+          <li data-step-indicator="2"><span>2</span><small id="progressStep2">Perfil</small></li>
+          <li data-step-indicator="3"><span>3</span><small id="progressStep3">Disponibilidad</small></li>
+          <li data-step-indicator="4"><span>4</span><small id="progressStep4">Foto y envío</small></li>
         </ol>
       </div>
 
       <form id="registrationForm" novalidate>
         <section class="form-step is-active" data-step="1" aria-labelledby="step1Title">
-          <div class="section-heading"><span class="section-number">01</span><div><h2 id="step1Title">Datos personales</h2><p>Información básica para identificarte y contactarte.</p></div></div>
-          <div class="notice notice-info"><span class="notice-icon">i</span><p>Los campos marcados con <strong>*</strong> son obligatorios.</p></div>
+          <div class="section-heading"><span class="section-number">01</span><div><h2 id="step1Title">Datos personales</h2><p id="step1Description">Información básica para identificarte y contactarte.</p></div></div>
+          <div class="notice notice-info"><span class="notice-icon">i</span><p id="step1Notice">Los campos marcados con * son obligatorios.</p></div>
           <div id="questionsStep1" class="dynamic-questions fields-grid" aria-live="polite"></div>
           <div class="form-actions end"><button class="button button-primary" type="button" data-next>Continuar <span>→</span></button></div>
         </section>
 
         <section class="form-step" data-step="2" aria-labelledby="step2Title" hidden>
-          <div class="section-heading"><span class="section-number">02</span><div><h2 id="step2Title">Perfil de trabajo</h2><p>Selecciona las actividades, lugares y horarios que aplican para ti.</p></div></div>
+          <div class="section-heading"><span class="section-number">02</span><div><h2 id="step2Title">Perfil de trabajo</h2><p id="step2Description">Selecciona las actividades, lugares y horarios que aplican para ti.</p></div></div>
           <div id="questionsStep2" class="dynamic-questions"></div>
-          <div class="notice notice-success"><span class="notice-icon">$</span><p><strong>Los pagos se realizan al finalizar cada evento.</strong></p></div>
+          <div class="notice notice-success"><span class="notice-icon">$</span><p id="step2Notice">Los pagos se realizan al finalizar cada evento.</p></div>
           <div class="form-actions"><button class="button button-ghost" type="button" data-prev>← Atrás</button><button class="button button-primary" type="button" data-next>Continuar →</button></div>
         </section>
 
         <section class="form-step" data-step="3" aria-labelledby="step3Title" hidden>
-          <div class="section-heading"><span class="section-number">03</span><div><h2 id="step3Title">Disponibilidad</h2><p>Cuéntanos cuándo puedes trabajar y tu experiencia.</p></div></div>
-          <div class="notice notice-warning"><span class="notice-icon">!</span><p>Los eventos se realizan principalmente los fines de semana y festivos.</p></div>
+          <div class="section-heading"><span class="section-number">03</span><div><h2 id="step3Title">Disponibilidad</h2><p id="step3Description">Cuéntanos cuándo puedes trabajar y tu experiencia.</p></div></div>
+          <div class="notice notice-warning"><span class="notice-icon">!</span><p id="step3Notice">Los eventos se realizan principalmente los fines de semana y festivos.</p></div>
           <div id="questionsStep3" class="dynamic-questions"></div>
           <div class="form-actions"><button class="button button-ghost" type="button" data-prev>← Atrás</button><button class="button button-primary" type="button" data-next>Continuar →</button></div>
         </section>
 
         <section class="form-step" data-step="4" aria-labelledby="step4Title" hidden>
-          <div class="section-heading"><span class="section-number">04</span><div><h2 id="step4Title">Foto, revisión y envío</h2><p>Último paso para crear tu carné vertical.</p></div></div>
+          <div class="section-heading"><span class="section-number">04</span><div><h2 id="step4Title">Foto, revisión y envío</h2><p id="step4Description">Último paso para crear tu carné vertical.</p></div></div>
           <div id="questionsStep4" class="dynamic-questions"></div>
 
           <section class="subsection photo-section" aria-labelledby="photoTitle">
-            <div class="subsection-title"><span aria-hidden="true">📷</span><div><h3 id="photoTitle">Foto tipo carné</h3><p>De frente, con buena luz, fondo sencillo y sin filtros.</p></div></div>
+            <div class="subsection-title"><span aria-hidden="true">📷</span><div><h3 id="photoTitle">Foto tipo carné</h3><p id="photoDescription">De frente, con buena luz, fondo sencillo y sin filtros.</p></div></div>
             <div class="photo-layout">
               <div class="photo-editor-wrap"><canvas id="photoCanvas" width="600" height="750" aria-label="Vista previa de la foto. Arrastra para ajustar."></canvas><span class="drag-hint">Arrastra para ajustar</span></div>
               <div class="photo-controls">
@@ -90,29 +96,29 @@
 
           <section class="subsection confirmations" aria-labelledby="confirmationTitle">
             <h3 id="confirmationTitle">Confirmaciones</h3>
-            <label class="check-line"><input type="checkbox" id="meetingConsent" required><span>Entiendo que debo asistir a la reunión presencial antes de participar en eventos. <b>*</b></span></label>
-            <label class="check-line"><input type="checkbox" id="privacyConsent" required><span>Autorizo el tratamiento de mis datos para gestionar la inscripción, contacto y participación en actividades. Confirmo que la información es verdadera. <b>*</b></span></label>
+            <label class="check-line"><input type="checkbox" id="meetingConsent" required><span id="meetingConsentText">Entiendo que debo asistir a la reunión presencial antes de participar en eventos. <b>*</b></span></label>
+            <label class="check-line"><input type="checkbox" id="privacyConsent" required><span id="privacyConsentText">Autorizo el tratamiento de mis datos para gestionar la inscripción, contacto y participación en actividades. Confirmo que la información es verdadera. <b>*</b></span></label>
           </section>
 
           <section class="subsection review-section" aria-labelledby="reviewTitle">
-            <div class="review-heading"><div><h3 id="reviewTitle">Revisa los datos del carné</h3><p>Se mostrarán con Equipo Verde.</p></div><button class="text-button" type="button" id="editPersonalButton">Editar</button></div>
+            <div class="review-heading"><div><h3 id="reviewTitle">Revisa los datos del carné</h3><p id="reviewDescription">Se mostrarán con Equipo Verde.</p></div><button class="text-button" type="button" id="editPersonalButton">Editar</button></div>
             <dl id="reviewSummary" class="review-grid"></dl>
           </section>
           <div id="submitStatus" class="submit-status" role="status" aria-live="polite"></div>
-          <div class="form-actions"><button class="button button-ghost" type="button" data-prev>← Atrás</button><button class="button button-primary button-submit" type="submit" id="submitButton"><span class="button-label">Guardar inscripción y crear carné</span><span class="button-loader"></span></button></div>
+          <div class="form-actions"><button class="button button-ghost" type="button" data-prev>← Atrás</button><button class="button button-primary button-submit" type="submit" id="submitButton"><span class="button-label" id="submitButtonLabel">Guardar inscripción y crear carné</span><span class="button-loader"></span></button></div>
         </section>
       </form>
     </section>
 
     <section id="resultView" class="result-card" aria-labelledby="resultTitle" hidden>
-      <div class="success-icon" aria-hidden="true">✓</div><span class="eyebrow green-text">Registro completado</span><h1 id="resultTitle">Tu carné de pre-registro está listo</h1>
-      <p class="result-intro">Descárgalo y preséntalo cuando llegues a la reunión.</p>
+      <div class="success-icon" aria-hidden="true">✓</div><span class="eyebrow green-text" id="resultEyebrow">Registro completado</span><h1 id="resultTitle">Tu carné de pre-registro está listo</h1>
+      <p class="result-intro" id="resultDescription">Descárgalo y preséntalo cuando llegues a la reunión.</p>
       <div id="sendNotice" class="notice notice-success" role="status"><span class="notice-icon">✓</span><p>Tu inscripción quedó guardada correctamente.</p></div>
       <div class="credential-portrait-wrap"><canvas id="credentialCanvas" width="720" height="1440" aria-label="Carné vertical generado con código QR protegido"></canvas></div>
       <p id="qrPrivacyNote" class="qr-privacy-note"><span aria-hidden="true">🔒</span> El QR abre el registro completo y solicita acceso de administrador antes de mostrar los datos.</p>
       <div class="result-actions"><button class="button button-primary" type="button" id="downloadCredential">Descargar carné PNG</button><button class="button button-secondary" type="button" id="shareCredential">Compartir carné</button><a class="button button-whatsapp" id="whatsappButton" href="https://wa.me/573224343263" target="_blank" rel="noopener">Avisar por WhatsApp</a></div>
-      <section class="meeting-card" aria-labelledby="meetingTitle"><div class="meeting-date"><strong>22</strong><span>AGO</span></div><div class="meeting-copy"><span class="eyebrow">Reunión presencial</span><h2 id="meetingTitle">Sábado, 22 de agosto de 2026</h2><p><strong>Hora:</strong> 10:00 a. m.</p><p><strong>Lugar:</strong> Tv. 35 # 39-15 (frente al CC. Centro Mayor)</p><a href="https://maps.app.goo.gl/bqvmpLpgzoeiBWu97" target="_blank" rel="noopener">Abrir ubicación →</a></div></section>
-      <div class="notice notice-warning result-warning"><span class="notice-icon">!</span><p>Este documento confirma el <strong>pre-registro</strong>. No reemplaza un documento de identidad ni acredita vínculo laboral.</p></div>
+      <section class="meeting-card" aria-labelledby="meetingTitle"><div class="meeting-date"><strong id="meetingDay">22</strong><span id="meetingMonth">AGO</span></div><div class="meeting-copy"><span class="eyebrow" id="meetingLabel">Reunión presencial</span><h2 id="meetingTitle">Sábado, 22 de agosto de 2026</h2><p><strong>Hora:</strong> <span id="meetingTime">10:00 a. m.</span></p><p><strong>Lugar:</strong> <span id="meetingAddress">Tv. 35 # 39-15 (frente al CC. Centro Mayor)</span></p><a id="meetingMapLink" href="https://maps.app.goo.gl/bqvmpLpgzoeiBWu97" target="_blank" rel="noopener">Abrir ubicación →</a></div></section>
+      <div class="notice notice-warning result-warning"><span class="notice-icon">!</span><p id="resultWarning">Este documento confirma el pre-registro. No reemplaza un documento de identidad ni acredita vínculo laboral.</p></div>
       <button class="text-button restart-button" type="button" id="restartButton">Realizar otro registro</button>
     </section>
 
@@ -121,7 +127,7 @@
         <div class="admin-brand"><img class="admin-brand-logo" src="logo.png" width="58" height="58" alt="Logo Equipo Verde"><div><span>CONTROL PRIVADO</span><h1 id="adminTitle">Inscripciones</h1></div></div>
         <div class="admin-user"><span id="adminUserEmail"></span><button id="closeAdminButton" class="button button-ghost" type="button">Volver al formulario</button><button id="logoutAdminButton" class="icon-button danger" type="button" title="Cerrar sesión">↪</button></div>
       </header>
-      <nav class="admin-tabs" aria-label="Secciones administrativas"><button class="is-active" type="button" data-admin-tab="dashboard">Resumen</button><button type="button" data-admin-tab="records">Registros</button><button type="button" data-admin-tab="questions">Preguntas</button></nav>
+      <nav class="admin-tabs" aria-label="Secciones administrativas"><button class="is-active" type="button" data-admin-tab="dashboard">Resumen</button><button type="button" data-admin-tab="scanner">Escanear QR</button><button type="button" data-admin-tab="records">Registros</button><button type="button" data-admin-tab="content">Contenido</button><button type="button" data-admin-tab="questions">Preguntas</button></nav>
       <div class="admin-content">
         <section class="admin-panel is-active" data-admin-panel="dashboard">
           <div class="admin-section-heading"><div><span class="eyebrow green-text">Vista general</span><h2>Control de inscripciones</h2><p>Información actualizada de todos los registros recibidos.</p></div><button id="refreshAdminButton" class="button button-secondary" type="button">Actualizar</button></div>
@@ -132,12 +138,74 @@
           </div>
         </section>
 
+        <section class="admin-panel" data-admin-panel="scanner" hidden>
+          <div class="admin-section-heading"><div><span class="eyebrow green-text">Control presencial</span><h2>Escanear carné</h2><p>Lee el QR, consulta el registro y confirma la compra de la hoja de inscripción.</p></div><span id="sheetPurchaseCount" class="count-badge">0 compras</span></div>
+          <div class="scanner-grid">
+            <article class="admin-card scanner-camera-card">
+              <div class="card-heading"><div><h3>Cámara del dispositivo</h3><p>Apunta al código QR impreso o mostrado en otro teléfono.</p></div><span class="native-badge">Cámara nativa</span></div>
+              <div id="qrScannerViewport" class="scanner-viewport">
+                <video id="qrScannerVideo" muted playsinline aria-label="Vista de la cámara para escanear el código QR"></video>
+                <div id="qrScannerIdle" class="scanner-idle"><span aria-hidden="true">▦</span><strong>Cámara apagada</strong><small>Presiona “Iniciar escáner” para comenzar.</small></div>
+                <div class="scanner-guide" aria-hidden="true"><span></span></div>
+              </div>
+              <p id="qrScannerStatus" class="scanner-status" role="status">La cámara solo se activa cuando tú lo indicas.</p>
+              <div class="scanner-actions"><button id="startQrScannerButton" class="button button-primary" type="button">Iniciar escáner</button><button id="stopQrScannerButton" class="button button-ghost" type="button" hidden>Detener cámara</button><label class="button button-secondary scanner-file-button" for="qrScannerImageInput">Leer una foto</label><input class="visually-hidden" id="qrScannerImageInput" type="file" accept="image/*" capture="environment"></div>
+            </article>
+
+            <article class="admin-card scanner-manual-card">
+              <div class="card-heading"><div><h3>Búsqueda manual</h3><p>Alternativa para equipos que no admiten lectura nativa.</p></div></div>
+              <form id="scannerManualForm">
+                <label class="field"><span>Enlace del QR o código del registro</span><input id="scannerManualInput" type="text" autocomplete="off" maxlength="500" placeholder="Pega el enlace o escribe el código" required></label>
+                <button class="button button-secondary" type="submit">Buscar registro</button>
+              </form>
+              <ol class="scanner-steps"><li>Inicia el escáner y permite el uso de la cámara.</li><li>Centra el QR dentro del recuadro.</li><li>Revisa los datos antes de confirmar la compra.</li></ol>
+            </article>
+          </div>
+          <div id="scannerResult" class="scanner-result" aria-live="polite">
+            <div class="scanner-result-empty"><span aria-hidden="true">⌕</span><h3>Esperando un código QR</h3><p>El registro aparecerá aquí después de escanearlo.</p></div>
+          </div>
+        </section>
+
         <section class="admin-panel" data-admin-panel="records" hidden>
           <div class="admin-section-heading"><div><span class="eyebrow green-text">Base de datos</span><h2>Todos los registros</h2><p>Busca por nombre, documento o asesor.</p></div><span id="recordCountBadge" class="count-badge">0 registros</span></div>
           <div class="filter-bar"><label class="search-field"><span>⌕</span><input type="search" id="recordSearch" placeholder="Buscar registro…"></label><select id="advisorFilter"><option value="">Todos los asesores</option></select></div>
           <div id="recordsMobile" class="records-mobile"></div>
-          <div class="table-wrap"><table class="records-table"><thead><tr><th>Persona</th><th>Edad</th><th>Género</th><th>Asesor</th><th>Equipo</th><th>Fecha</th><th></th></tr></thead><tbody id="recordsTableBody"></tbody></table></div>
+          <div class="table-wrap"><table class="records-table"><thead><tr><th>Persona</th><th>Edad</th><th>Género</th><th>Asesor</th><th>Equipo</th><th>Hoja</th><th>Fecha</th><th></th></tr></thead><tbody id="recordsTableBody"></tbody></table></div>
           <div id="recordsEmpty" class="empty-state" hidden><span>⌕</span><h3>No hay registros para mostrar</h3><p>Cambia los filtros o espera una nueva inscripción.</p></div>
+        </section>
+
+        <section class="admin-panel" data-admin-panel="content" hidden>
+          <div class="admin-section-heading"><div><span class="eyebrow green-text">Configuración general</span><h2>Contenido del formulario</h2><p>Cambia textos, instrucciones, datos de la reunión y botones. Los cambios se aplican para todos.</p></div><button class="button button-primary" type="submit" form="contentForm">Guardar cambios</button></div>
+          <div class="notice notice-info admin-note"><span class="notice-icon">i</span><p>El equipo y los datos esenciales del carné permanecen protegidos para no afectar los registros.</p></div>
+          <form id="contentForm" class="content-editor">
+            <article class="admin-card content-card"><div class="card-heading"><div><h3>Encabezado e introducción</h3><p>Identidad y presentación inicial del formulario.</p></div></div><div class="fields-grid">
+              <label class="field"><span>Nombre visible de la empresa</span><input data-content-key="brandName" type="text" maxlength="60" required></label>
+              <label class="field"><span>Subtítulo del encabezado</span><input data-content-key="brandSubtitle" type="text" maxlength="80" required></label>
+              <label class="field field-full"><span>Texto superior</span><input data-content-key="heroEyebrow" type="text" maxlength="100" required></label>
+              <label class="field field-full"><span>Título principal</span><input data-content-key="heroTitle" type="text" maxlength="120" required></label>
+              <label class="field field-full"><span>Descripción principal</span><textarea data-content-key="heroDescription" rows="3" maxlength="320" required></textarea></label>
+              <label class="field field-full"><span>Texto del pie de página</span><input data-content-key="footerText" type="text" maxlength="160" required></label>
+            </div></article>
+
+            <article class="admin-card content-card"><div class="card-heading"><div><h3>Pasos e instrucciones</h3><p>Textos que acompañan cada parte del registro.</p></div></div><div class="fields-grid">
+              <label class="field"><span>Etiqueta del paso 1</span><input data-content-key="progress1" type="text" maxlength="30" required></label><label class="field"><span>Título del paso 1</span><input data-content-key="step1Title" type="text" maxlength="80" required></label><label class="field field-full"><span>Descripción del paso 1</span><input data-content-key="step1Description" type="text" maxlength="180" required></label><label class="field field-full"><span>Aviso del paso 1</span><input data-content-key="step1Notice" type="text" maxlength="180" required></label>
+              <label class="field"><span>Etiqueta del paso 2</span><input data-content-key="progress2" type="text" maxlength="30" required></label><label class="field"><span>Título del paso 2</span><input data-content-key="step2Title" type="text" maxlength="80" required></label><label class="field field-full"><span>Descripción del paso 2</span><input data-content-key="step2Description" type="text" maxlength="180" required></label><label class="field field-full"><span>Aviso del paso 2</span><input data-content-key="step2Notice" type="text" maxlength="180" required></label>
+              <label class="field"><span>Etiqueta del paso 3</span><input data-content-key="progress3" type="text" maxlength="30" required></label><label class="field"><span>Título del paso 3</span><input data-content-key="step3Title" type="text" maxlength="80" required></label><label class="field field-full"><span>Descripción del paso 3</span><input data-content-key="step3Description" type="text" maxlength="180" required></label><label class="field field-full"><span>Aviso del paso 3</span><input data-content-key="step3Notice" type="text" maxlength="180" required></label>
+              <label class="field"><span>Etiqueta del paso 4</span><input data-content-key="progress4" type="text" maxlength="30" required></label><label class="field"><span>Título del paso 4</span><input data-content-key="step4Title" type="text" maxlength="80" required></label><label class="field field-full"><span>Descripción del paso 4</span><input data-content-key="step4Description" type="text" maxlength="180" required></label>
+              <label class="field"><span>Título de la foto</span><input data-content-key="photoTitle" type="text" maxlength="80" required></label><label class="field"><span>Descripción de la foto</span><input data-content-key="photoDescription" type="text" maxlength="180" required></label>
+              <label class="field"><span>Título de confirmaciones</span><input data-content-key="confirmationsTitle" type="text" maxlength="80" required></label><label class="field"><span>Título de revisión</span><input data-content-key="reviewTitle" type="text" maxlength="100" required></label><label class="field field-full"><span>Confirmación de asistencia</span><textarea data-content-key="meetingConsentText" rows="2" maxlength="300" required></textarea></label><label class="field field-full"><span>Autorización de datos</span><textarea data-content-key="privacyConsentText" rows="3" maxlength="500" required></textarea></label><label class="field field-full"><span>Descripción de la revisión</span><input data-content-key="reviewDescription" type="text" maxlength="160" required></label><label class="field field-full"><span>Texto del botón de envío</span><input data-content-key="submitButtonText" type="text" maxlength="100" required></label>
+            </div></article>
+
+            <article class="admin-card content-card"><div class="card-heading"><div><h3>Resultado y carné</h3><p>Mensajes que aparecen después de completar la inscripción.</p></div></div><div class="fields-grid">
+              <label class="field"><span>Texto superior del resultado</span><input data-content-key="resultEyebrow" type="text" maxlength="80" required></label><label class="field"><span>Título del resultado</span><input data-content-key="resultTitle" type="text" maxlength="120" required></label><label class="field field-full"><span>Descripción del resultado</span><input data-content-key="resultDescription" type="text" maxlength="220" required></label><label class="field field-full"><span>Confirmación de guardado</span><input data-content-key="successMessage" type="text" maxlength="220" required></label>
+              <label class="field"><span>Botón Descargar</span><input data-content-key="downloadButtonText" type="text" maxlength="60" required></label><label class="field"><span>Botón Compartir</span><input data-content-key="shareButtonText" type="text" maxlength="60" required></label><label class="field"><span>Botón WhatsApp</span><input data-content-key="whatsappButtonText" type="text" maxlength="60" required></label><label class="field"><span>Botón nuevo registro</span><input data-content-key="restartButtonText" type="text" maxlength="60" required></label><label class="field"><span>WhatsApp de la empresa</span><input data-content-key="companyWhatsapp" type="tel" inputmode="numeric" pattern="[0-9]{10,15}" maxlength="15" required></label><label class="field"><span>Texto inferior del carné</span><input data-content-key="credentialFooter" type="text" maxlength="90" required></label><label class="field field-full"><span>Aviso legal del resultado</span><textarea data-content-key="resultWarning" rows="3" maxlength="420" required></textarea></label>
+            </div></article>
+
+            <article class="admin-card content-card"><div class="card-heading"><div><h3>Reunión presencial</h3><p>Fecha, hora y ubicación mostradas en la página y en el carné.</p></div></div><div class="fields-grid">
+              <label class="field"><span>Nombre de la reunión</span><input data-content-key="meetingLabel" type="text" maxlength="80" required></label><label class="field"><span>Fecha</span><input data-content-key="meetingDate" type="date" required></label><label class="field"><span>Hora</span><input data-content-key="meetingTime" type="time" required></label><label class="field"><span>Enlace de Google Maps</span><input data-content-key="meetingMapUrl" type="url" maxlength="500" required></label><label class="field field-full"><span>Dirección</span><input data-content-key="meetingAddress" type="text" maxlength="220" required></label>
+            </div></article>
+            <div class="content-save-bar"><button id="restoreDefaultContentButton" class="button button-ghost" type="button">Restaurar textos originales</button><button class="button button-primary" type="submit">Guardar todos los cambios</button></div>
+          </form>
         </section>
 
         <section class="admin-panel" data-admin-panel="questions" hidden>
@@ -149,7 +217,7 @@
     </section>
   </main>
 
-  <footer id="publicFooter" class="site-footer"><p>Logística &amp; Eventos · Equipo Verde · Uso exclusivo para inscripciones</p></footer>
+  <footer id="publicFooter" class="site-footer"><p id="footerText">Logística &amp; Eventos · Equipo Verde · Uso exclusivo para inscripciones</p></footer>
 
   <div id="adminLoginModal" class="modal-backdrop" hidden><section class="modal-card login-card" role="dialog" aria-modal="true" aria-labelledby="loginTitle"><button class="modal-close" type="button" data-close-modal="adminLoginModal" aria-label="Cerrar">×</button><div class="lock-badge">🔒</div><span class="eyebrow green-text">Acceso restringido</span><h2 id="loginTitle">Control administrativo</h2><p id="loginIntro">Ingresa con tu cuenta de administrador de Logística &amp; Eventos.</p><form id="adminLoginForm"><label class="field"><span>Correo</span><input type="email" id="adminEmail" autocomplete="username" required></label><label class="field"><span>Contraseña</span><input type="password" id="adminPassword" autocomplete="current-password" minlength="6" required></label><p id="loginError" class="modal-error" role="alert"></p><button id="adminLoginButton" class="button button-primary full-button" type="submit">Ingresar al control</button></form></section></div>
 

@@ -35,7 +35,34 @@ const IS_DEMO = location.hostname === "terminal.local" && PAGE_PARAMS.get("demo"
 const linkedRecordParam = PAGE_PARAMS.get("registro") || "";
 const LINKED_RECORD_ID = /^[A-Za-z0-9_-]{4,120}$/.test(linkedRecordParam) ? linkedRecordParam : "";
 const SHOW_DEMO_CREDENTIAL = IS_DEMO && PAGE_PARAMS.get("credential") === "1";
-const MEETING = { dateShort: "22 AGO 2026", time: "10:00 A. M." };
+const CREDENTIAL_CACHE_KEY = "logisticaEventosCarnetsV1";
+
+const DEFAULT_CONTENT = {
+  brandName: "LOGÍSTICA & EVENTOS",
+  brandSubtitle: "Registro de personal",
+  heroEyebrow: "Inscripción de nuevos aspirantes",
+  heroTitle: "Regístrate y recibe tu carné digital",
+  heroDescription: "Completa tus datos, carga una foto tipo carné y descarga tu comprobante para presentarlo el día de la reunión.",
+  footerText: "Logística & Eventos · Equipo Verde · Uso exclusivo para inscripciones",
+  progress1: "Datos", progress2: "Perfil", progress3: "Disponibilidad", progress4: "Foto y envío",
+  step1Title: "Datos personales", step1Description: "Información básica para identificarte y contactarte.", step1Notice: "Los campos marcados con * son obligatorios.",
+  step2Title: "Perfil de trabajo", step2Description: "Selecciona las actividades, lugares y horarios que aplican para ti.", step2Notice: "Los pagos se realizan al finalizar cada evento.",
+  step3Title: "Disponibilidad", step3Description: "Cuéntanos cuándo puedes trabajar y tu experiencia.", step3Notice: "Los eventos se realizan principalmente los fines de semana y festivos.",
+  step4Title: "Foto, revisión y envío", step4Description: "Último paso para crear tu carné vertical.",
+  photoTitle: "Foto tipo carné", photoDescription: "De frente, con buena luz, fondo sencillo y sin filtros.",
+  confirmationsTitle: "Confirmaciones",
+  meetingConsentText: "Entiendo que debo asistir a la reunión presencial antes de participar en eventos.",
+  privacyConsentText: "Autorizo el tratamiento de mis datos para gestionar la inscripción, contacto y participación en actividades. Confirmo que la información es verdadera.",
+  reviewTitle: "Revisa los datos del carné", reviewDescription: "Se mostrarán con Equipo Verde.", submitButtonText: "Guardar inscripción y crear carné",
+  resultEyebrow: "Registro completado", resultTitle: "Tu carné de pre-registro está listo", resultDescription: "Descárgalo y preséntalo cuando llegues a la reunión.",
+  successMessage: "Tu inscripción quedó guardada correctamente en el sistema.",
+  downloadButtonText: "Descargar carné PNG", shareButtonText: "Compartir carné", whatsappButtonText: "Avisar por WhatsApp", restartButtonText: "Realizar otro registro",
+  companyWhatsapp: COMPANY_WHATSAPP,
+  credentialFooter: "PRE-REGISTRO · NO ACREDITA VÍNCULO LABORAL",
+  meetingLabel: "Reunión presencial", meetingDate: "2026-08-22", meetingTime: "10:00",
+  meetingAddress: "Tv. 35 # 39-15 (frente al CC. Centro Mayor)", meetingMapUrl: "https://maps.app.goo.gl/bqvmpLpgzoeiBWu97",
+  resultWarning: "Este documento confirma el pre-registro. No reemplaza un documento de identidad ni acredita vínculo laboral.",
+};
 
 const ADVISORS = [
   "Fran Santamaria", "Vanessa Barragan", "Fernanda", "Sofia Lopez", "Karol Leon",
@@ -90,6 +117,7 @@ const credentialLogo = new Image();
 let credentialLogoPromise = null;
 
 let questions = clone(DEFAULT_QUESTIONS);
+let content = clone(DEFAULT_CONTENT);
 let currentStep = 1;
 let isSubmitting = false;
 let registrationId = "";
@@ -106,6 +134,14 @@ let filteredRecords = [];
 let demoAdmin = false;
 let linkedRecordOpened = false;
 let confirmResolver = null;
+let latestCachedCredentialId = "";
+let qrScannerStream = null;
+let qrScannerFrame = 0;
+let qrScannerActive = false;
+let qrScannerBusy = false;
+let qrScannerLastCheck = 0;
+let qrDetector = null;
+let scannerRecordId = "";
 let photoState = { image: null, zoom: 1, panX: 0, panY: 0, dragging: false, pointerX: 0, pointerY: 0 };
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -115,6 +151,48 @@ function normalizeText(value) { return String(value || "").normalize("NFD").repl
 function safeImage(value) { return /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(value || "") ? value : ""; }
 function timestampToDate(value) { if (!value) return null; if (typeof value.toDate === "function") return value.toDate(); const date = value instanceof Date ? value : new Date(value); return Number.isNaN(date.getTime()) ? null : date; }
 function formatDate(value, withTime = false) { const date = timestampToDate(value); if (!date) return "Pendiente"; return new Intl.DateTimeFormat("es-CO", withTime ? { dateStyle:"medium", timeStyle:"short" } : { dateStyle:"medium" }).format(date); }
+
+function normalizeContent(value = {}) {
+  const clean = {};
+  Object.entries(DEFAULT_CONTENT).forEach(([key,fallback]) => {
+    const candidate = typeof value?.[key] === "string" ? value[key].trim() : "";
+    clean[key] = candidate || fallback;
+  });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(clean.meetingDate)) clean.meetingDate = DEFAULT_CONTENT.meetingDate;
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(clean.meetingTime)) clean.meetingTime = DEFAULT_CONTENT.meetingTime;
+  clean.companyWhatsapp = clean.companyWhatsapp.replace(/\D/g,"");
+  if (clean.companyWhatsapp.length < 10 || clean.companyWhatsapp.length > 15) clean.companyWhatsapp = DEFAULT_CONTENT.companyWhatsapp;
+  try { const url = new URL(clean.meetingMapUrl); if (!/^https?:$/.test(url.protocol)) throw new Error(); }
+  catch { clean.meetingMapUrl = DEFAULT_CONTENT.meetingMapUrl; }
+  return clean;
+}
+
+function meetingDisplay() {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(content.meetingDate) || /^(\d{4})-(\d{2})-(\d{2})$/.exec(DEFAULT_CONTENT.meetingDate);
+  const date = new Date(Number(match[1]),Number(match[2])-1,Number(match[3]),12,0,0);
+  const long = new Intl.DateTimeFormat("es-CO",{weekday:"long",day:"numeric",month:"long",year:"numeric"}).format(date);
+  const month = new Intl.DateTimeFormat("es-CO",{month:"short"}).format(date).replace(".","").toLocaleUpperCase("es");
+  const short = `${String(date.getDate()).padStart(2,"0")} ${month} ${date.getFullYear()}`;
+  const [hours,minutes] = content.meetingTime.split(":").map(Number);
+  const timeDate = new Date(2000,0,1,hours,minutes,0);
+  const time = new Intl.DateTimeFormat("es-CO",{hour:"numeric",minute:"2-digit",hour12:true}).format(timeDate);
+  return { day:String(date.getDate()).padStart(2,"0"), month, long:long.charAt(0).toLocaleUpperCase("es")+long.slice(1), short, time };
+}
+
+function setText(id,value) { const node=$(id);if(node)node.textContent=value; }
+function setRequiredText(id,value) { const node=$(id);if(!node)return;node.textContent=`${value} `;const mark=document.createElement("b");mark.textContent="*";node.append(mark); }
+
+function applyContent() {
+  content=normalizeContent(content);
+  const mapping={brandName:"brandName",brandSubtitle:"brandSubtitle",heroEyebrow:"heroEyebrow",heroTitle:"pageTitle",heroDescription:"heroDescription",progress1:"progressStep1",progress2:"progressStep2",progress3:"progressStep3",progress4:"progressStep4",step1Title:"step1Title",step1Description:"step1Description",step1Notice:"step1Notice",step2Title:"step2Title",step2Description:"step2Description",step2Notice:"step2Notice",step3Title:"step3Title",step3Description:"step3Description",step3Notice:"step3Notice",step4Title:"step4Title",step4Description:"step4Description",photoTitle:"photoTitle",photoDescription:"photoDescription",confirmationsTitle:"confirmationTitle",reviewTitle:"reviewTitle",reviewDescription:"reviewDescription",submitButtonText:"submitButtonLabel",resultEyebrow:"resultEyebrow",resultTitle:"resultTitle",resultDescription:"resultDescription",downloadButtonText:"downloadCredential",shareButtonText:"shareCredential",whatsappButtonText:"whatsappButton",restartButtonText:"restartButton",footerText:"footerText",resultWarning:"resultWarning",meetingLabel:"meetingLabel",meetingAddress:"meetingAddress"};
+  Object.entries(mapping).forEach(([key,id])=>setText(id,content[key]));
+  setRequiredText("meetingConsentText",content.meetingConsentText);setRequiredText("privacyConsentText",content.privacyConsentText);
+  const meeting=meetingDisplay();setText("meetingDay",meeting.day);setText("meetingMonth",meeting.month);setText("meetingTitle",meeting.long);setText("meetingTime",meeting.time);
+  $("meetingMapLink").href=content.meetingMapUrl;
+  if($("resultView").hidden)$("sendNotice").querySelector("p").textContent=content.successMessage;
+  document.title=`Inscripción | ${titleCase(content.brandName)}`;
+  updateWhatsappLink();
+}
 
 function showToast(message) {
   clearTimeout(toastTimer);
@@ -410,7 +488,7 @@ async function drawCredential() {
   const logo=await loadCredentialLogo();
   const ctx=credentialContext,w=credentialCanvas.width,h=credentialCanvas.height;
   const first=titleCase(answer("firstName")).toLocaleUpperCase("es");const last=titleCase(answer("lastName")).toLocaleUpperCase("es");const age=answer("age");const gender=String(answer("gender")).toLocaleUpperCase("es");const advisor=String(answer("advisor")).toLocaleUpperCase("es");const whatsapp=formatWhatsapp(answer("whatsapp"));
-  const code=`LE-${(registrationId||answer("document")||Date.now()).replace(/[^a-z0-9]/gi,"").slice(-8).toUpperCase()}`;const date=new Intl.DateTimeFormat("es-CO").format(new Date());const accessUrl=recordAccessUrl();const qr=qrCanvas(accessUrl);
+  const code=`LE-${(registrationId||answer("document")||Date.now()).replace(/[^a-z0-9]/gi,"").slice(-8).toUpperCase()}`;const date=new Intl.DateTimeFormat("es-CO").format(new Date());const accessUrl=recordAccessUrl();const qr=qrCanvas(accessUrl);const meeting=meetingDisplay();const credentialBrand=content.brandName.toLocaleUpperCase("es");
 
   ctx.clearRect(0,0,w,h);ctx.textBaseline="alphabetic";
   const gradient=ctx.createLinearGradient(0,0,w,h);gradient.addColorStop(0,"#032f22");gradient.addColorStop(.52,"#076647");gradient.addColorStop(1,"#0a9463");ctx.fillStyle=gradient;ctx.fillRect(0,0,w,h);
@@ -420,7 +498,7 @@ async function drawCredential() {
   ctx.textAlign="center";
   if(logo){ctx.save();ctx.shadowColor="rgba(0,18,12,.35)";ctx.shadowBlur=18;ctx.drawImage(logo,314,32,92,92);ctx.restore();}
   else{ctx.fillStyle="#ffffff";ctx.beginPath();ctx.arc(w/2,76,29,0,Math.PI*2);ctx.fill();ctx.fillStyle="#08734e";ctx.font="900 18px Arial";ctx.textBaseline="middle";ctx.fillText("LE",w/2,77);}
-  ctx.textBaseline="alphabetic";ctx.fillStyle="#ffffff";ctx.font="900 27px Arial";ctx.fillText("LOGÍSTICA & EVENTOS",w/2,154);ctx.fillStyle="#a8efd0";ctx.font="800 12px Arial";ctx.fillText("CARNÉ DE PRE-REGISTRO",w/2,178);
+  ctx.textBaseline="alphabetic";ctx.fillStyle="#ffffff";fitText(ctx,credentialBrand,600,27,18,900);ctx.fillText(credentialBrand,w/2,154);ctx.fillStyle="#a8efd0";ctx.font="800 12px Arial";ctx.fillText("CARNÉ DE PRE-REGISTRO",w/2,178);
   ctx.fillStyle="rgba(255,255,255,.12)";roundedRect(ctx,270,184,180,40,20);ctx.fill();ctx.fillStyle="#ffffff";ctx.font="800 13px Arial";ctx.fillText(code,w/2,210);
 
   const clean=cleanPhotoCanvas(600,750);ctx.save();ctx.shadowColor="rgba(0,24,17,.3)";ctx.shadowBlur=26;roundedRect(ctx,198,240,324,405,26);ctx.fillStyle="rgba(1,36,25,.25)";ctx.fill();ctx.restore();ctx.save();roundedRect(ctx,200,238,320,400,24);ctx.clip();ctx.drawImage(clean,200,238,320,400);ctx.restore();ctx.strokeStyle="rgba(255,255,255,.85)";ctx.lineWidth=4;roundedRect(ctx,200,238,320,400,24);ctx.stroke();
@@ -436,13 +514,76 @@ async function drawCredential() {
   if(qr){ctx.save();ctx.imageSmoothingEnabled=false;ctx.drawImage(qr,275,1148,170,170);ctx.restore();ctx.fillStyle="#073c2b";ctx.font="900 10px Arial";ctx.textAlign="center";ctx.fillText("ESCANEA · ACCESO PROTEGIDO",w/2,1343);}
   else{ctx.fillStyle="#dceee6";roundedRect(ctx,275,1148,170,170,16);ctx.fill();ctx.fillStyle="#3d6655";ctx.font="900 31px Arial";ctx.textAlign="center";ctx.fillText("QR",w/2,1227);ctx.font="800 11px Arial";ctx.fillText("NO DISPONIBLE",w/2,1255);ctx.fillStyle="#073c2b";ctx.font="900 10px Arial";ctx.fillText("REGISTRO SIN CONEXIÓN",w/2,1343);}
 
-  ctx.fillStyle="rgba(255,255,255,.72)";ctx.font="700 10px Arial";ctx.textAlign="left";ctx.fillText(`EMITIDO ${date}`,70,1382);ctx.textAlign="right";ctx.fillText(`${MEETING.dateShort} · ${MEETING.time}`,650,1382);ctx.textAlign="center";ctx.font="700 8px Arial";ctx.fillText("PRE-REGISTRO · NO ACREDITA VÍNCULO LABORAL",w/2,1402);
+  ctx.fillStyle="rgba(255,255,255,.72)";ctx.font="700 10px Arial";ctx.textAlign="left";ctx.fillText(`EMITIDO ${date}`,70,1382);ctx.textAlign="right";ctx.fillText(`${meeting.short} · ${meeting.time.toLocaleUpperCase("es")}`,650,1382);ctx.textAlign="center";fitText(ctx,content.credentialFooter.toLocaleUpperCase("es"),580,8,7,700);ctx.fillText(content.credentialFooter.toLocaleUpperCase("es"),w/2,1402);
   $("qrPrivacyNote").textContent=accessUrl?"🔒 El QR abre el registro completo y solicita acceso de administrador antes de mostrar los datos.":"⚠ El QR no está disponible porque el registro no pudo guardarse en línea.";
   generatedFileName=`carne-${titleCase(answer("firstName")).toLowerCase().replace(/[^a-záéíóúñ0-9]+/gi,"-")}-${titleCase(answer("lastName")).toLowerCase().replace(/[^a-záéíóúñ0-9]+/gi,"-")}.png`;
 }
 
 function compressedPhotoData() {
   const canvas=cleanPhotoCanvas(360,450); let quality=.78; let data=canvas.toDataURL("image/jpeg",quality); while(data.length>250000&&quality>.45){quality-=.08;data=canvas.toDataURL("image/jpeg",quality);} return data;
+}
+
+function readCredentialCache() {
+  try {
+    const parsed=JSON.parse(localStorage.getItem(CREDENTIAL_CACHE_KEY)||"[]");
+    if(!Array.isArray(parsed))return[];
+    return parsed.filter((item)=>item&&/^[A-Za-z0-9_-]{4,120}$/.test(String(item.id||""))&&typeof item.answersJson==="string"&&safeImage(item.photoData)).slice(0,5);
+  } catch { return []; }
+}
+
+function writeCredentialCache(items) {
+  try{localStorage.setItem(CREDENTIAL_CACHE_KEY,JSON.stringify(items.slice(0,5)));}
+  catch(error){console.warn("No se pudo conservar el carné en este dispositivo",error);}
+}
+
+function currentCredentialSnapshot(savedOnline) {
+  const values=collectAnswers();values.meetingConsent=$("meetingConsent").checked;values.privacyConsent=$("privacyConsent").checked;
+  return {id:registrationId,firstName:titleCase(values.firstName),lastName:titleCase(values.lastName),age:Number(values.age),gender:String(values.gender),advisor:String(values.advisor),team:TEAM_NAME,whatsapp:String(values.whatsapp),phone:String(values.phone),document:String(values.document),photoData:compressedPhotoData(),answersJson:JSON.stringify(values),cachedAt:Date.now(),savedOnline:Boolean(savedOnline)};
+}
+
+function cacheCurrentCredential(savedOnline) {
+  if(!registrationId)return;const record=currentCredentialSnapshot(savedOnline);const existing=readCredentialCache().filter((item)=>item.id!==record.id);writeCredentialCache([record,...existing]);latestCachedCredentialId=record.id;renderSavedCredentialPanel();
+}
+
+function renderSavedCredentialPanel() {
+  const records=readCredentialCache();const latest=records[0];latestCachedCredentialId=latest?.id||"";$("savedCredentialPanel").hidden=!latest;if(!latest)return;
+  setText("savedCredentialTitle",`${latest.firstName||""} ${latest.lastName||""}`.trim()||"Tu carné sigue disponible");
+  const date=latest.cachedAt?new Intl.DateTimeFormat("es-CO",{dateStyle:"medium"}).format(new Date(latest.cachedAt)):"fecha guardada";
+  setText("savedCredentialMeta",`Asesor(a): ${latest.advisor||"Sin registrar"} · Guardado ${date}`);
+}
+
+function removeCachedCredential(id=latestCachedCredentialId) {
+  writeCredentialCache(readCredentialCache().filter((item)=>item.id!==id));renderSavedCredentialPanel();
+}
+
+function imageFromDataUrl(source) {
+  return new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(image);image.onerror=()=>reject(new Error("No fue posible recuperar la foto del carné."));image.src=source;});
+}
+
+async function showCredentialRecord(record,onlineVerified=false) {
+  let values={};try{values=JSON.parse(record.answersJson||"{}");}catch{}
+  values={...values,firstName:record.firstName||values.firstName,lastName:record.lastName||values.lastName,age:String(record.age||values.age||""),gender:record.gender||values.gender,advisor:record.advisor||values.advisor,whatsapp:record.whatsapp||values.whatsapp,phone:record.phone||values.phone,document:record.document||values.document};
+  renderAllQuestions();restoreAnswers(values);updateMinorQuestions();
+  const image=await imageFromDataUrl(safeImage(record.photoData));photoState={image,zoom:1,panX:0,panY:0,dragging:false,pointerX:0,pointerY:0};registrationId=String(record.id);applyContent();await drawCredential();updateWhatsappLink();
+  const notice=$("sendNotice");notice.className=onlineVerified||record.savedOnline?"notice notice-success":"notice notice-warning";notice.querySelector("p").textContent=onlineVerified?"Tu carné fue recuperado desde el registro guardado en el sistema.":"Tu carné fue recuperado desde la copia segura de este dispositivo.";
+  $("formView").hidden=true;$("resultView").hidden=false;$("resultView").scrollIntoView({behavior:"smooth",block:"start"});
+}
+
+async function restoreSavedCredential() {
+  const cached=readCredentialCache().find((item)=>item.id===latestCachedCredentialId)||readCredentialCache()[0];if(!cached)return;
+  setLoading(true,"Recuperando tu carné…");let record=cached;let onlineVerified=false;
+  try {
+    if(!String(cached.id).startsWith("LOCAL-")&&firebaseReady&&db&&auth?.currentUser){
+      try{const snapshot=await db.collection("inscripciones_personal").doc(cached.id).get();if(snapshot.exists){record={id:snapshot.id,...snapshot.data(),cachedAt:cached.cachedAt,savedOnline:true};onlineVerified=true;}else{removeCachedCredential(cached.id);showToast("Este registro ya no está disponible.");return;}}
+      catch(error){console.warn("Se usará la copia local del carné",error);}
+    }
+    await showCredentialRecord(record,onlineVerified);
+  } catch(error){console.error(error);showToast("No fue posible recuperar este carné.");}
+  finally{setLoading(false);}
+}
+
+function forgetSavedCredential() {
+  if(!latestCachedCredentialId)return;removeCachedCredential();showToast("El carné se quitó de este dispositivo. El registro de la empresa no fue eliminado.");
 }
 
 function credentialBlob() { return new Promise((resolve,reject)=>credentialCanvas.toBlob((blob)=>blob?resolve(blob):reject(new Error("No se pudo crear el archivo")),"image/png",1)); }
@@ -459,7 +600,7 @@ async function shareCredential() {
 
 function updateWhatsappLink() {
   const message=["Hola, ya completé mi inscripción en Logística & Eventos.",`Nombre: ${titleCase(answer("firstName"))} ${titleCase(answer("lastName"))}`,`Asesor(a): ${answer("advisor")}`,`Equipo: ${TEAM_NAME}`,`Código: ${registrationId||"pendiente"}`,"Adjunto mi carné digital."].join("\n");
-  $("whatsappButton").href=`https://wa.me/${COMPANY_WHATSAPP}?text=${encodeURIComponent(message)}`;
+  $("whatsappButton").href=`https://wa.me/${content.companyWhatsapp}?text=${encodeURIComponent(message)}`;
 }
 
 async function initializeBackend() {
@@ -468,6 +609,7 @@ async function initializeBackend() {
   try {
     if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     db=firebase.firestore();auth=firebase.auth();
+    await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
     try { db.settings({experimentalAutoDetectLongPolling:true}); } catch {}
     const initialUser=await new Promise((resolve)=>{const stop=auth.onAuthStateChanged((user)=>{stop();resolve(user);});});
     publicUser=initialUser;
@@ -482,9 +624,10 @@ async function initializeBackend() {
 function subscribeQuestionConfig() {
   questionUnsubscribe?.();
   questionUnsubscribe=db.collection("configuracion").doc("formulario_inscripcion").onSnapshot((snapshot)=>{
-    if (snapshot.exists&&Array.isArray(snapshot.data().questions)&&snapshot.data().questions.length) {
-      questions=snapshot.data().questions.map(normalizeQuestion);renderAllQuestions(true);
-    }
+    if (!snapshot.exists)return;
+    const data=snapshot.data();
+    if (Array.isArray(data.questions)&&data.questions.length) { questions=data.questions.map(normalizeQuestion);renderAllQuestions(true); }
+    content=normalizeContent(data.content||DEFAULT_CONTENT);applyContent();renderSavedCredentialPanel();
   },(error)=>console.warn("No se pudo cargar la configuración",error));
 }
 
@@ -515,7 +658,7 @@ async function showDemoCredential() {
   if(!SHOW_DEMO_CREDENTIAL)return;
   const record=records.find((item)=>item.id==="DEMO-001")||demoRecords()[0];let values={};try{values=JSON.parse(record.answersJson||"{}");}catch{}
   restoreAnswers(values);const portrait=document.createElement("canvas");portrait.width=600;portrait.height=750;const ctx=portrait.getContext("2d");const gradient=ctx.createLinearGradient(0,0,0,750);gradient.addColorStop(0,"#e7f5ef");gradient.addColorStop(1,"#bdd8cc");ctx.fillStyle=gradient;ctx.fillRect(0,0,600,750);ctx.fillStyle="#6f9e8a";ctx.beginPath();ctx.arc(300,270,105,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.ellipse(300,675,210,230,0,Math.PI,0);ctx.fill();ctx.fillStyle="#ffffff";ctx.font="900 56px Arial";ctx.textAlign="center";ctx.fillText("AR",300,700);
-  photoState={image:portrait,zoom:1,panX:0,panY:0,dragging:false,pointerX:0,pointerY:0};registrationId="DEMO-001";await drawCredential();updateWhatsappLink();$("formView").hidden=true;$("resultView").hidden=false;$("sendNotice").className="notice notice-success";$("sendNotice").querySelector("p").textContent="Vista de demostración: carné vertical con WhatsApp, logo y QR protegido.";
+  photoState={image:portrait,zoom:1,panX:0,panY:0,dragging:false,pointerX:0,pointerY:0};registrationId="DEMO-001";cacheCurrentCredential(true);await drawCredential();updateWhatsappLink();$("formView").hidden=true;$("resultView").hidden=false;$("sendNotice").className="notice notice-success";$("sendNotice").querySelector("p").textContent="Vista de demostración: carné vertical con WhatsApp, logo y QR protegido.";
 }
 
 async function submitRegistration(event) {
@@ -524,9 +667,9 @@ async function submitRegistration(event) {
   let saved=true;
   try { registrationId=await saveRegistration(); }
   catch(error){ saved=false;console.error(error);registrationId=`LOCAL-${String(Date.now()).slice(-7)}`; }
-  await drawCredential();updateWhatsappLink();
+  cacheCurrentCredential(saved);await drawCredential();updateWhatsappLink();
   const notice=$("sendNotice");
-  if(saved){notice.className="notice notice-success";notice.querySelector("p").textContent="Tu inscripción quedó guardada correctamente en el sistema.";}
+  if(saved){notice.className="notice notice-success";notice.querySelector("p").textContent=content.successMessage;}
   else{notice.className="notice notice-warning";notice.querySelector("p").textContent="El carné fue creado, pero el registro no pudo guardarse. Descárgalo y envíalo por WhatsApp para completar la inscripción.";}
   $("formView").hidden=true;$("resultView").hidden=false;$("resultView").scrollIntoView({behavior:"smooth",block:"start"});isSubmitting=false;$("submitButton").disabled=false;$("submitButton").classList.remove("is-loading");
 }
@@ -572,20 +715,23 @@ async function showAdminView(email) {
 }
 
 function closeAdminView() {
-  recordsUnsubscribe?.();recordsUnsubscribe=null;$("adminView").hidden=true;$("publicHeader").hidden=false;$("publicFooter").hidden=false;$("formView").hidden=false;$("resultView").hidden=true;showStep(1,false);window.scrollTo({top:0,behavior:"smooth"});
+  stopQrScanner();recordsUnsubscribe?.();recordsUnsubscribe=null;$("adminView").hidden=true;$("publicHeader").hidden=false;$("publicFooter").hidden=false;$("formView").hidden=false;$("resultView").hidden=true;showStep(1,false);window.scrollTo({top:0,behavior:"smooth"});
 }
 
 async function logoutAdmin() {
-  recordsUnsubscribe?.();recordsUnsubscribe=null;
+  stopQrScanner();recordsUnsubscribe?.();recordsUnsubscribe=null;
   if(IS_DEMO){demoAdmin=false;closeAdminView();return;}
   try{await auth.signOut();publicUser=(await auth.signInAnonymously()).user;}catch(error){console.warn(error);}closeAdminView();showToast("Sesión administrativa cerrada.");
 }
 
 async function ensureQuestionConfig() {
   const ref=db.collection("configuracion").doc("formulario_inscripcion");const snapshot=await ref.get();
-  if(!snapshot.exists)await ref.set({questions:questions.map(questionForStorage),updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:ADMIN_EMAIL});
-  else if(Array.isArray(snapshot.data().questions))questions=snapshot.data().questions.map(normalizeQuestion);
-  renderAllQuestions(true);
+  if(!snapshot.exists)await ref.set({questions:questions.map(questionForStorage),content:normalizeContent(content),updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:ADMIN_EMAIL});
+  else {
+    const data=snapshot.data();if(Array.isArray(data.questions))questions=data.questions.map(normalizeQuestion);content=normalizeContent(data.content||DEFAULT_CONTENT);
+    if(!data.content)await ref.set({content,updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:ADMIN_EMAIL},{merge:true});
+  }
+  renderAllQuestions(true);applyContent();
 }
 
 function questionForStorage(question) {
@@ -614,7 +760,113 @@ async function openLinkedRecord() {
   showRecord(record.id);
 }
 
-function renderAdminData() { renderDashboard();renderAdvisorFilter();renderRecords(); }
+function renderAdminData() {
+  renderDashboard();renderAdvisorFilter();renderRecords();
+  const purchases=records.filter((record)=>record.registrationSheetPurchased===true).length;
+  $("sheetPurchaseCount").textContent=`${purchases} ${purchases===1?"compra":"compras"}`;
+  if(scannerRecordId){const record=records.find((item)=>item.id===scannerRecordId);if(record)renderScannerRecord(record);}
+}
+
+function setScannerStatus(message,type="") {
+  const status=$("qrScannerStatus");status.textContent=message;status.className=`scanner-status${type?` is-${type}`:""}`;
+}
+
+function recordIdFromQr(rawValue) {
+  const value=String(rawValue||"").trim();if(!value)return"";
+  const credentialCode=value.toLocaleUpperCase("es");
+  const byCredentialCode=records.find((record)=>`LE-${String(record.id).replace(/[^a-z0-9]/gi,"").slice(-8).toUpperCase()}`===credentialCode);
+  if(byCredentialCode)return byCredentialCode.id;
+  if(/^[A-Za-z0-9_-]{4,120}$/.test(value))return value;
+  try {
+    const url=new URL(value,location.href);const id=url.searchParams.get("registro")||"";
+    return /^[A-Za-z0-9_-]{4,120}$/.test(id)?id:"";
+  } catch { return""; }
+}
+
+function sheetPurchaseBadge(record) {
+  return record.registrationSheetPurchased===true?'<span class="purchase-badge is-complete">Comprada</span>':'<span class="purchase-badge">Pendiente</span>';
+}
+
+function renderScannerRecord(record) {
+  if(!record)return;
+  scannerRecordId=record.id;const purchased=record.registrationSheetPurchased===true;
+  const purchaseDate=purchased?formatDate(record.registrationSheetPurchasedAt,true):"";
+  const purchaseBy=String(record.registrationSheetPurchasedBy||"Administrador");
+  $("scannerResult").innerHTML=`<article class="scanner-record-card${purchased?" is-purchased":""}"><div class="scanner-record-heading">${recordPhoto(record,"scanner-record-photo")}<div><span class="eyebrow green-text">QR leído correctamente</span><h3>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</h3><div class="record-meta"><span>Documento: ${escapeHTML(record.document)}</span><span>${escapeHTML(record.age)} años</span><span>Equipo ${escapeHTML(record.team||TEAM_NAME)}</span></div></div>${sheetPurchaseBadge(record)}</div><dl class="scanner-record-data"><div><dt>Asesor(a)</dt><dd>${escapeHTML(record.advisor||"Sin registrar")}</dd></div><div><dt>WhatsApp</dt><dd>${escapeHTML(formatWhatsapp(record.whatsapp))}</dd></div><div><dt>Teléfono</dt><dd>${escapeHTML(formatWhatsapp(record.phone))}</dd></div><div><dt>Fecha de registro</dt><dd>${escapeHTML(formatDate(record.createdAt,true))}</dd></div></dl><div class="purchase-confirmation${purchased?" is-complete":""}"><span class="purchase-confirmation-icon" aria-hidden="true">${purchased?"✓":"$"}</span><div><strong>${purchased?"Compra de la hoja confirmada":"Hoja de inscripción pendiente"}</strong><p>${purchased?`Registrada ${escapeHTML(purchaseDate)} por ${escapeHTML(purchaseBy)}.`:"Confirma únicamente después de recibir el pago de la hoja de inscripción."}</p></div><button class="button ${purchased?"button-ghost":"button-primary"}" type="button" data-mark-sheet="${escapeHTML(record.id)}" ${purchased?"disabled":""}>${purchased?"Compra ya registrada":"Confirmar compra de la hoja"}</button></div><button class="text-button scanner-open-record" type="button" data-view-record="${escapeHTML(record.id)}">Ver formulario completo</button></article>`;
+}
+
+function renderScannerFailure(title,message) {
+  scannerRecordId="";$("scannerResult").innerHTML=`<div class="scanner-result-empty is-error"><span aria-hidden="true">!</span><h3>${escapeHTML(title)}</h3><p>${escapeHTML(message)}</p></div>`;
+}
+
+async function findScannerRecord(rawValue) {
+  const id=recordIdFromQr(rawValue);
+  if(!id){setScannerStatus("El código no pertenece a un carné válido.","error");renderScannerFailure("Código no válido","Escanea el QR generado por esta página o escribe el identificador completo del registro.");return;}
+  setScannerStatus("Buscando el registro…","info");let record=records.find((item)=>item.id===id);
+  try {
+    if(!record&&!IS_DEMO&&db){const snapshot=await db.collection("inscripciones_personal").doc(id).get();if(snapshot.exists){record={id:snapshot.id,...snapshot.data()};records.unshift(record);}}
+    if(!record){setScannerStatus("No encontramos un registro asociado a este QR.","error");renderScannerFailure("Registro no encontrado","Verifica que el carné corresponda a esta página y vuelve a intentarlo.");return;}
+    scannerRecordId=record.id;renderAdminData();renderScannerRecord(record);setScannerStatus("QR leído. Verifica los datos antes de confirmar la compra.","success");
+  } catch(error){console.error(error);setScannerStatus("No fue posible consultar el registro.","error");renderScannerFailure("Error de consulta","Revisa la conexión e inténtalo nuevamente.");}
+}
+
+function stopQrScanner() {
+  qrScannerActive=false;qrScannerBusy=false;if(qrScannerFrame)cancelAnimationFrame(qrScannerFrame);qrScannerFrame=0;
+  qrScannerStream?.getTracks().forEach((track)=>track.stop());qrScannerStream=null;
+  const video=$("qrScannerVideo");if(video)video.srcObject=null;
+  $("qrScannerViewport")?.classList.remove("is-active");if($("qrScannerIdle"))$("qrScannerIdle").hidden=false;
+  if($("startQrScannerButton"))$("startQrScannerButton").hidden=false;if($("stopQrScannerButton"))$("stopQrScannerButton").hidden=true;
+}
+
+async function scanQrFrame(timestamp=0) {
+  if(!qrScannerActive)return;qrScannerFrame=requestAnimationFrame(scanQrFrame);
+  const video=$("qrScannerVideo");if(qrScannerBusy||timestamp-qrScannerLastCheck<240||video.readyState<2)return;
+  qrScannerBusy=true;qrScannerLastCheck=timestamp;
+  try {
+    const codes=await qrDetector.detect(video);if(!qrScannerActive)return;const value=codes.find((code)=>code.rawValue)?.rawValue;
+    if(value){navigator.vibrate?.(70);stopQrScanner();await findScannerRecord(value);}
+  } catch(error){console.warn("Lectura QR",error);}
+  finally{qrScannerBusy=false;}
+}
+
+async function startQrScanner() {
+  if(qrScannerActive)return;
+  if(!navigator.mediaDevices?.getUserMedia){setScannerStatus("Este navegador no permite usar la cámara. Utiliza la búsqueda manual.","error");return;}
+  if(typeof window.BarcodeDetector!=="function"){setScannerStatus("Este navegador no admite el lector QR nativo. Utiliza la búsqueda manual.","error");return;}
+  $("startQrScannerButton").disabled=true;setScannerStatus("Solicitando acceso a la cámara…","info");
+  try {
+    qrDetector=qrDetector||new window.BarcodeDetector({formats:["qr_code"]});
+    qrScannerStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});
+    const video=$("qrScannerVideo");video.srcObject=qrScannerStream;await video.play();qrScannerActive=true;$("qrScannerViewport").classList.add("is-active");$("qrScannerIdle").hidden=true;$("startQrScannerButton").hidden=true;$("stopQrScannerButton").hidden=false;setScannerStatus("Cámara activa. Centra el QR dentro del recuadro.","success");qrScannerFrame=requestAnimationFrame(scanQrFrame);
+  } catch(error){console.error(error);stopQrScanner();const denied=error?.name==="NotAllowedError";setScannerStatus(denied?"No se concedió permiso para usar la cámara.":"No fue posible iniciar la cámara. Utiliza la búsqueda manual.","error");}
+  finally{$("startQrScannerButton").disabled=false;}
+}
+
+async function scanQrImage(event) {
+  const input=event.target;const file=input.files?.[0];input.value="";if(!file)return;
+  if(typeof window.BarcodeDetector!=="function"||typeof createImageBitmap!=="function"){setScannerStatus("La lectura de imágenes no está disponible en este navegador. Utiliza la búsqueda manual.","error");return;}
+  if(!file.type.startsWith("image/")||file.size>12*1024*1024){setScannerStatus("Selecciona una imagen válida de máximo 12 MB.","error");return;}
+  setScannerStatus("Leyendo el código de la imagen…","info");
+  try {
+    qrDetector=qrDetector||new window.BarcodeDetector({formats:["qr_code"]});const bitmap=await createImageBitmap(file);const codes=await qrDetector.detect(bitmap);bitmap.close?.();const value=codes.find((code)=>code.rawValue)?.rawValue;
+    if(!value){setScannerStatus("No encontramos un QR legible en la imagen.","error");return;}await findScannerRecord(value);
+  } catch(error){console.error(error);setScannerStatus("No fue posible leer esa imagen.","error");}
+}
+
+async function markRegistrationSheetPurchased(id) {
+  const record=records.find((item)=>item.id===id);if(!record)return;
+  if(record.registrationSheetPurchased===true){renderScannerRecord(record);showToast("La compra de esta hoja ya estaba registrada.");return;}
+  const accepted=await confirmDialog(`¿Confirmas que ${record.firstName} ${record.lastName} ya compró la hoja de inscripción?`,{title:"Registrar compra",acceptText:"Sí, registrar"});if(!accepted)return;
+  setLoading(true,"Registrando compra de la hoja…");
+  try {
+    const purchasedAt=new Date();const purchasedBy=IS_DEMO?($("adminUserEmail").textContent||"Administrador"):auth.currentUser.email;
+    if(IS_DEMO)Object.assign(record,{registrationSheetPurchased:true,registrationSheetPurchasedAt:purchasedAt,registrationSheetPurchasedBy:purchasedBy});
+    else await db.collection("inscripciones_personal").doc(id).update({registrationSheetPurchased:true,registrationSheetPurchasedAt:firebase.firestore.FieldValue.serverTimestamp(),registrationSheetPurchasedBy:purchasedBy});
+    Object.assign(record,{registrationSheetPurchased:true,registrationSheetPurchasedAt:purchasedAt,registrationSheetPurchasedBy:purchasedBy});renderAdminData();
+    if(!$("recordModal").hidden)showRecord(id);showToast("Compra de la hoja registrada correctamente.");setScannerStatus("Compra confirmada y agregada al registro.","success");
+  } catch(error){console.error(error);showToast("No se pudo registrar la compra de la hoja.");setScannerStatus("No fue posible guardar la confirmación.","error");}
+  finally{setLoading(false);}
+}
 
 function renderDashboard() {
   const now=new Date();const startToday=new Date(now.getFullYear(),now.getMonth(),now.getDate());const weekAgo=new Date(now.getTime()-7*86400000);const counts={};
@@ -639,8 +891,8 @@ function renderRecords() {
   const search=normalizeText($("recordSearch").value);const advisor=$("advisorFilter").value;
   filteredRecords=records.filter((record)=>{const haystack=normalizeText(`${record.firstName} ${record.lastName} ${record.document} ${record.advisor}`);return(!search||haystack.includes(search))&&(!advisor||record.advisor===advisor);});
   $("recordCountBadge").textContent=`${filteredRecords.length} ${filteredRecords.length===1?"registro":"registros"}`;$("recordsEmpty").hidden=filteredRecords.length>0;
-  $("recordsTableBody").innerHTML=filteredRecords.map((record)=>`<tr><td><div class="person-cell">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.document)}</small></span></div></td><td>${escapeHTML(record.age)}</td><td>${escapeHTML(record.gender)}</td><td>${escapeHTML(record.advisor)}</td><td><span class="team-badge">${escapeHTML(record.team||TEAM_NAME)}</span></td><td>${escapeHTML(formatDate(record.createdAt,true))}</td><td><button class="table-action" type="button" data-view-record="${escapeHTML(record.id)}">Ver</button></td></tr>`).join("");
-  $("recordsMobile").innerHTML=filteredRecords.map((record)=>`<button class="mobile-record" type="button" data-view-record="${escapeHTML(record.id)}">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor)} · ${escapeHTML(formatDate(record.createdAt))}</small></span><span>›</span></button>`).join("");
+  $("recordsTableBody").innerHTML=filteredRecords.map((record)=>`<tr><td><div class="person-cell">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.document)}</small></span></div></td><td>${escapeHTML(record.age)}</td><td>${escapeHTML(record.gender)}</td><td>${escapeHTML(record.advisor)}</td><td><span class="team-badge">${escapeHTML(record.team||TEAM_NAME)}</span></td><td>${sheetPurchaseBadge(record)}</td><td>${escapeHTML(formatDate(record.createdAt,true))}</td><td><button class="table-action" type="button" data-view-record="${escapeHTML(record.id)}">Ver</button></td></tr>`).join("");
+  $("recordsMobile").innerHTML=filteredRecords.map((record)=>`<button class="mobile-record" type="button" data-view-record="${escapeHTML(record.id)}">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor)} · ${record.registrationSheetPurchased===true?"Hoja comprada":"Hoja pendiente"} · ${escapeHTML(formatDate(record.createdAt))}</small></span><span>›</span></button>`).join("");
 }
 
 function recordAnswerItems(record) {
@@ -663,28 +915,30 @@ function displayRecordValue(value) {
 function showRecord(id) {
   const record=records.find((item)=>item.id===id);if(!record)return;
   const answerItems=recordAnswerItems(record);
-  const photo=safeImage(record.photoData);$("recordDetail").innerHTML=`<div class="record-profile">${photo?`<img src="${photo}" alt="Foto de ${escapeHTML(record.firstName)}">`:`<span class="avatar-placeholder">${escapeHTML(String(record.firstName||"L").charAt(0)+String(record.lastName||"E").charAt(0))}</span>`}<div><span class="eyebrow green-text">Registro ${escapeHTML(id.slice(0,8).toUpperCase())}</span><h2 id="recordModalTitle">${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</h2><div class="record-meta"><span>${escapeHTML(record.age)} años</span><span>${escapeHTML(record.gender)}</span><span>Asesor: ${escapeHTML(record.advisor)}</span><span>Equipo ${escapeHTML(record.team||TEAM_NAME)}</span></div><p>Registrado: ${escapeHTML(formatDate(record.createdAt,true))}</p></div></div><dl class="record-answer-grid">${answerItems.map((item)=>`<div class="record-answer"><dt>${escapeHTML(item.label)}</dt><dd>${escapeHTML(displayRecordValue(item.value))}</dd></div>`).join("")}</dl><div class="record-delete"><button class="button button-danger" type="button" data-delete-record="${escapeHTML(record.id)}">Eliminar registro</button></div>`;
+  const purchased=record.registrationSheetPurchased===true;const photo=safeImage(record.photoData);const purchaseDate=purchased?formatDate(record.registrationSheetPurchasedAt,true):"";const purchaseBy=String(record.registrationSheetPurchasedBy||"Administrador");
+  $("recordDetail").innerHTML=`<div class="record-profile">${photo?`<img src="${photo}" alt="Foto de ${escapeHTML(record.firstName)}">`:`<span class="avatar-placeholder">${escapeHTML(String(record.firstName||"L").charAt(0)+String(record.lastName||"E").charAt(0))}</span>`}<div><span class="eyebrow green-text">Registro ${escapeHTML(id.slice(0,8).toUpperCase())}</span><h2 id="recordModalTitle">${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</h2><div class="record-meta"><span>${escapeHTML(record.age)} años</span><span>${escapeHTML(record.gender)}</span><span>Asesor: ${escapeHTML(record.advisor)}</span><span>Equipo ${escapeHTML(record.team||TEAM_NAME)}</span>${sheetPurchaseBadge(record)}</div><p>Registrado: ${escapeHTML(formatDate(record.createdAt,true))}</p></div></div><div class="purchase-confirmation record-purchase${purchased?" is-complete":""}"><span class="purchase-confirmation-icon" aria-hidden="true">${purchased?"✓":"$"}</span><div><strong>${purchased?"Hoja de inscripción comprada":"Compra de la hoja pendiente"}</strong><p>${purchased?`Confirmada ${escapeHTML(purchaseDate)} por ${escapeHTML(purchaseBy)}.`:"Puedes confirmarla aquí o desde el escáner QR."}</p></div><button class="button ${purchased?"button-ghost":"button-primary"}" type="button" data-mark-sheet="${escapeHTML(record.id)}" ${purchased?"disabled":""}>${purchased?"Compra registrada":"Confirmar compra"}</button></div><dl class="record-answer-grid">${answerItems.map((item)=>`<div class="record-answer"><dt>${escapeHTML(item.label)}</dt><dd>${escapeHTML(displayRecordValue(item.value))}</dd></div>`).join("")}</dl><div class="record-delete"><button class="button button-danger" type="button" data-delete-record="${escapeHTML(record.id)}">Eliminar registro</button></div>`;
   openModal("recordModal");
 }
 
 async function deleteRecord(id) {
   const record=records.find((item)=>item.id===id);if(!record)return;
-  const accepted=await confirmDialog(`¿Eliminar el registro de ${record.firstName} ${record.lastName}? Esta acción no se puede deshacer.`);if(!accepted)return;
+  const accepted=await confirmDialog(`¿Eliminar el registro de ${record.firstName} ${record.lastName}? Esta acción no se puede deshacer.`,{title:"Eliminar registro",acceptText:"Eliminar",danger:true});if(!accepted)return;
   setLoading(true,"Eliminando registro…");
   try{if(IS_DEMO){records=records.filter((item)=>item.id!==id);renderAdminData();}else await db.collection("inscripciones_personal").doc(id).delete();closeModal("recordModal");showToast("Registro eliminado.");}
   catch(error){console.error(error);showToast("No se pudo eliminar el registro.");}finally{setLoading(false);}
 }
 
-function confirmDialog(message) {
-  $("confirmMessage").textContent=message;openModal("confirmModal");return new Promise((resolve)=>{confirmResolver=resolve;});
+function confirmDialog(message,{title="Confirmar acción",acceptText="Confirmar",danger=false}={}) {
+  $("confirmTitle").textContent=title;$("confirmMessage").textContent=message;$("acceptConfirmButton").textContent=acceptText;$("acceptConfirmButton").className=`button ${danger?"button-danger":"button-primary"}`;openModal("confirmModal");return new Promise((resolve)=>{confirmResolver=resolve;});
 }
 
 function resolveConfirm(value) { closeModal("confirmModal");confirmResolver?.(value);confirmResolver=null; }
 
 function showAdminTab(name) {
+  if(name!=="scanner")stopQrScanner();
   document.querySelectorAll("[data-admin-tab]").forEach((button)=>button.classList.toggle("is-active",button.dataset.adminTab===name));
   document.querySelectorAll("[data-admin-panel]").forEach((panel)=>{const active=panel.dataset.adminPanel===name;panel.hidden=!active;panel.classList.toggle("is-active",active);});
-  if(name==="records")renderRecords();if(name==="questions")renderQuestionEditor();
+  if(name==="records")renderRecords();if(name==="content")loadContentEditor();if(name==="questions")renderQuestionEditor();
 }
 
 function renderQuestionEditor() {
@@ -719,7 +973,7 @@ async function moveQuestion(id,direction) {
 
 async function deleteQuestion(id) {
   const question=questions.find((item)=>item.id===id);if(!question||question.locked)return;
-  if(!await confirmDialog(`¿Eliminar la pregunta “${question.label}”? Los registros anteriores conservarán su respuesta.`))return;
+  if(!await confirmDialog(`¿Eliminar la pregunta “${question.label}”? Los registros anteriores conservarán su respuesta.`,{title:"Eliminar pregunta",acceptText:"Eliminar",danger:true}))return;
   questions=questions.filter((item)=>item.id!==id);await persistQuestions("Pregunta eliminada.");
 }
 
@@ -732,19 +986,47 @@ async function persistQuestions(message="Orden actualizado.") {
   finally{setLoading(false);}
 }
 
+function loadContentEditor() {
+  document.querySelectorAll("[data-content-key]").forEach((field)=>{const key=field.dataset.contentKey;if(key in content)field.value=content[key];});
+}
+
+async function persistContent(message="Contenido actualizado.") {
+  content=normalizeContent(content);applyContent();loadContentEditor();
+  if(IS_DEMO){showToast(message);return;}
+  setLoading(true,"Guardando contenido del formulario…");
+  try{await db.collection("configuracion").doc("formulario_inscripcion").set({content,updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:auth.currentUser.email},{merge:true});showToast(message);}
+  catch(error){console.error(error);showToast("No se pudo guardar el contenido.");}
+  finally{setLoading(false);}
+}
+
+async function saveContent(event) {
+  event.preventDefault();const editor=$("contentForm");if(!editor.reportValidity())return;
+  const next={};editor.querySelectorAll("[data-content-key]").forEach((field)=>{next[field.dataset.contentKey]=field.value.trim();});
+  content=normalizeContent(next);await persistContent("Contenido guardado para todos los usuarios.");
+}
+
+async function restoreDefaultContent() {
+  if(!await confirmDialog("¿Restaurar todos los textos, botones y datos de la reunión a sus valores originales?",{title:"Restaurar contenido",acceptText:"Restaurar"}))return;
+  content=clone(DEFAULT_CONTENT);await persistContent("Contenido original restaurado.");
+}
+
 function attachEvents() {
   document.querySelectorAll("[data-next]").forEach((button)=>button.addEventListener("click",()=>{if(validateStep(currentStep))showStep(currentStep+1);}));
   document.querySelectorAll("[data-prev]").forEach((button)=>button.addEventListener("click",()=>showStep(currentStep-1)));
   form.addEventListener("submit",submitRegistration);
   form.addEventListener("input",(event)=>{clearInvalid(event.target);event.target.closest("[data-required-group]")?.classList.remove("is-invalid");if(event.target.matches('input[type="tel"],input[data-question-id="document"]'))event.target.value=event.target.value.replace(/\D/g,"");});
   form.addEventListener("change",(event)=>{clearInvalid(event.target);event.target.closest("[data-required-group]")?.classList.remove("is-invalid");if(event.target.dataset.questionId==="age")updateMinorQuestions();});
+  $("restoreSavedCredentialButton").addEventListener("click",restoreSavedCredential);$("forgetSavedCredentialButton").addEventListener("click",forgetSavedCredential);
   $("editPersonalButton").addEventListener("click",()=>showStep(1));$("downloadCredential").addEventListener("click",downloadCredential);$("shareCredential").addEventListener("click",shareCredential);$("restartButton").addEventListener("click",()=>location.reload());
   $("adminAccessButton").addEventListener("click",openAdminAccess);$("adminLoginForm").addEventListener("submit",loginAdmin);$("closeAdminButton").addEventListener("click",closeAdminView);$("logoutAdminButton").addEventListener("click",logoutAdmin);$("refreshAdminButton").addEventListener("click",()=>{if(IS_DEMO)renderAdminData();else loadAdminRecords();showToast("Información actualizada.");});
   document.querySelectorAll("[data-admin-tab]").forEach((button)=>button.addEventListener("click",()=>showAdminTab(button.dataset.adminTab)));document.querySelectorAll("[data-go-records]").forEach((button)=>button.addEventListener("click",()=>showAdminTab("records")));
-  $("recordSearch").addEventListener("input",renderRecords);$("advisorFilter").addEventListener("change",renderRecords);$("addQuestionButton").addEventListener("click",()=>openQuestionEditor());$("questionType").addEventListener("change",toggleQuestionOptions);$("questionForm").addEventListener("submit",saveQuestion);
+  $("startQrScannerButton").addEventListener("click",startQrScanner);$("stopQrScannerButton").addEventListener("click",()=>{stopQrScanner();setScannerStatus("Cámara detenida.");});$("qrScannerImageInput").addEventListener("change",scanQrImage);
+  $("scannerManualForm").addEventListener("submit",async(event)=>{event.preventDefault();stopQrScanner();await findScannerRecord($("scannerManualInput").value);});
+  $("recordSearch").addEventListener("input",renderRecords);$("advisorFilter").addEventListener("change",renderRecords);$("contentForm").addEventListener("submit",saveContent);$("restoreDefaultContentButton").addEventListener("click",restoreDefaultContent);$("addQuestionButton").addEventListener("click",()=>openQuestionEditor());$("questionType").addEventListener("change",toggleQuestionOptions);$("questionForm").addEventListener("submit",saveQuestion);
   document.addEventListener("click",(event)=>{
     const close=event.target.closest("[data-close-modal]");if(close)closeModal(close.dataset.closeModal);
     const view=event.target.closest("[data-view-record]");if(view)showRecord(view.dataset.viewRecord);
+    const markSheet=event.target.closest("[data-mark-sheet]");if(markSheet&&!markSheet.disabled)markRegistrationSheetPurchased(markSheet.dataset.markSheet);
     const removeRecord=event.target.closest("[data-delete-record]");if(removeRecord)deleteRecord(removeRecord.dataset.deleteRecord);
     const edit=event.target.closest("[data-edit-question]");if(edit)openQuestionEditor(edit.dataset.editQuestion);
     const move=event.target.closest("[data-move-question]");if(move)moveQuestion(move.dataset.questionId,move.dataset.moveQuestion);
@@ -752,6 +1034,7 @@ function attachEvents() {
   });
   document.querySelectorAll(".modal-backdrop").forEach((backdrop)=>backdrop.addEventListener("click",(event)=>{if(event.target===backdrop&&backdrop.id!=="confirmModal")closeModal(backdrop.id);}));
   $("cancelConfirmButton").addEventListener("click",()=>resolveConfirm(false));$("acceptConfirmButton").addEventListener("click",()=>resolveConfirm(true));
+  document.addEventListener("visibilitychange",()=>{if(document.hidden)stopQrScanner();});
   document.addEventListener("keydown",(event)=>{if(event.key==="Escape"){const open=document.querySelector(".modal-backdrop:not([hidden])");if(open&&open.id!=="confirmModal")closeModal(open.id);}if(event.ctrlKey&&event.altKey&&event.key.toLowerCase()==="a"){event.preventDefault();openAdminAccess();}});
 }
 
@@ -770,7 +1053,7 @@ function attachPhotoEvents() {
 }
 
 async function init() {
-  renderAllQuestions();drawPhotoPlaceholder();attachEvents();attachPhotoEvents();showStep(1,false);showConnection("Conectando con el sistema de inscripciones…");await initializeBackend();await loadCredentialLogo();
+  renderAllQuestions();applyContent();renderSavedCredentialPanel();drawPhotoPlaceholder();attachEvents();attachPhotoEvents();showStep(1,false);showConnection("Conectando con el sistema de inscripciones…");await initializeBackend();renderSavedCredentialPanel();await loadCredentialLogo();
   if(LINKED_RECORD_ID)await openAdminAccess();else await showDemoCredential();
 }
 
