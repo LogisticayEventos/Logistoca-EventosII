@@ -20,7 +20,7 @@
     </a>
     <div class="header-actions">
       <span class="status-pill"><span class="status-dot"></span> Equipo Verde</span>
-      <button id="adminAccessButton" class="admin-entry" type="button" aria-label="Acceso administrativo" title="Acceso administrativo">🔒</button>
+      <button id="adminAccessButton" class="admin-entry" type="button" aria-label="Acceso de administrador o reclutador" title="Administrador o reclutador">🔒</button>
     </div>
   </header>
 
@@ -39,6 +39,12 @@
         <span class="saved-credential-icon" aria-hidden="true">✓</span>
         <div class="saved-credential-copy"><span>Carné guardado en este dispositivo</span><strong id="savedCredentialTitle">Tu carné sigue disponible</strong><small id="savedCredentialMeta"></small></div>
         <div class="saved-credential-actions"><button id="restoreSavedCredentialButton" class="button button-secondary" type="button">Ver mi carné</button><button id="forgetSavedCredentialButton" class="text-button" type="button">Quitar de este dispositivo</button></div>
+      </section>
+
+      <section id="recruiterContextBanner" class="recruiter-context-banner" aria-labelledby="recruiterContextName" hidden>
+        <span class="recruiter-context-icon" aria-hidden="true">↗</span>
+        <div class="recruiter-context-copy"><span>Enlace personalizado de reclutador</span><strong id="recruiterContextName"></strong><small id="recruiterContextWhatsapp"></small></div>
+        <div class="recruiter-context-actions"><button id="copyRecruiterLinkButton" class="button button-secondary" type="button">Copiar enlace</button><button id="shareRecruiterLinkButton" class="text-button" type="button">Compartir</button><button id="editRecruiterContextButton" class="text-button" type="button">Editar datos</button></div>
       </section>
 
       <div class="progress-wrap" aria-label="Progreso del formulario">
@@ -83,12 +89,16 @@
             <div class="photo-layout">
               <div class="photo-editor-wrap"><canvas id="photoCanvas" width="600" height="750" aria-label="Vista previa de la foto. Arrastra para ajustar."></canvas><span class="drag-hint">Arrastra para ajustar</span></div>
               <div class="photo-controls">
-                <label class="upload-button" for="photoInput"><span>＋</span> Elegir o tomar foto</label>
-                <input class="visually-hidden" type="file" id="photoInput" accept="image/jpeg,image/png,image/webp" capture="user">
-                <p id="photoFileName" class="file-name">Ninguna foto seleccionada</p>
+                <div class="photo-source-actions" aria-label="Opciones para agregar la foto">
+                  <input class="visually-hidden" type="file" id="photoCameraInput" accept="image/*" capture="user">
+                  <label class="upload-button upload-button-camera" for="photoCameraInput"><span aria-hidden="true">📷</span> Tomar foto</label>
+                  <input class="visually-hidden" type="file" id="photoInput" accept="image/*">
+                  <label class="upload-button" for="photoInput"><span aria-hidden="true">▧</span> Elegir de la galería</label>
+                </div>
+                <p id="photoFileName" class="file-name" role="status">Ninguna foto seleccionada</p>
                 <label class="range-label" for="photoZoom"><span>Zoom</span><output id="zoomOutput">100%</output></label>
                 <input type="range" id="photoZoom" min="1" max="2.2" step="0.01" value="1" disabled>
-                <ul class="photo-tips"><li>Centra el rostro dentro de la guía.</li><li>JPG, PNG o WEBP; máximo 8 MB.</li><li>La imagen se comprime antes de guardarse.</li></ul>
+                <ul class="photo-tips"><li>Puedes tomar una foto nueva o usar una de tu galería.</li><li>Centra el rostro dentro de la guía.</li><li>Imagen de máximo 8 MB.</li><li>La foto se comprime antes de guardarse.</li></ul>
               </div>
             </div>
             <p id="photoError" class="group-error" role="alert">Debes cargar una foto válida.</p>
@@ -116,6 +126,11 @@
       <div id="sendNotice" class="notice notice-success" role="status"><span class="notice-icon">✓</span><p>Tu inscripción quedó guardada correctamente.</p></div>
       <div class="credential-portrait-wrap"><canvas id="credentialCanvas" width="720" height="1440" aria-label="Carné vertical generado con código QR protegido"></canvas></div>
       <p id="qrPrivacyNote" class="qr-privacy-note"><span aria-hidden="true">🔒</span> El QR abre el registro completo y solicita acceso de administrador antes de mostrar los datos.</p>
+      <section id="recruiterDeliveryPanel" class="recruiter-delivery-panel" aria-labelledby="recruiterDeliveryTitle" hidden>
+        <span class="recruiter-delivery-icon" aria-hidden="true">WA</span>
+        <div class="recruiter-delivery-copy"><span>Carné para tu reclutador</span><h2 id="recruiterDeliveryTitle">Compártelo con tu reclutador</h2><p id="recruiterDeliveryHelp">Usa el botón para adjuntar el PNG desde el menú nativo del teléfono.</p></div>
+        <div class="recruiter-delivery-actions"><button id="sendCredentialToRecruiter" class="button button-whatsapp" type="button">Compartir carné</button><a id="openRecruiterWhatsapp" class="button button-secondary" href="https://wa.me/573224343263" target="_blank" rel="noopener">Abrir chat</a></div>
+      </section>
       <div class="result-actions"><button class="button button-primary" type="button" id="downloadCredential">Descargar carné PNG</button><button class="button button-secondary" type="button" id="shareCredential">Compartir carné</button><a class="button button-whatsapp" id="whatsappButton" href="https://wa.me/573224343263" target="_blank" rel="noopener">Avisar por WhatsApp</a></div>
       <section class="meeting-card" aria-labelledby="meetingTitle"><div class="meeting-date"><strong id="meetingDay">22</strong><span id="meetingMonth">AGO</span></div><div class="meeting-copy"><span class="eyebrow" id="meetingLabel">Reunión presencial</span><h2 id="meetingTitle">Sábado, 22 de agosto de 2026</h2><p><strong>Hora:</strong> <span id="meetingTime">10:00 a. m.</span></p><p><strong>Lugar:</strong> <span id="meetingAddress">Tv. 35 # 39-15 (frente al CC. Centro Mayor)</span></p><a id="meetingMapLink" href="https://maps.app.goo.gl/bqvmpLpgzoeiBWu97" target="_blank" rel="noopener">Abrir ubicación →</a></div></section>
       <div class="notice notice-warning result-warning"><span class="notice-icon">!</span><p id="resultWarning">Este documento confirma el pre-registro. No reemplaza un documento de identidad ni acredita vínculo laboral.</p></div>
@@ -132,6 +147,22 @@
         <section class="admin-panel is-active" data-admin-panel="dashboard">
           <div class="admin-section-heading"><div><span class="eyebrow green-text">Vista general</span><h2>Control de inscripciones</h2><p>Información actualizada de todos los registros recibidos.</p></div><button id="refreshAdminButton" class="button button-secondary" type="button">Actualizar</button></div>
           <div class="stats-grid"><article class="stat-card"><span>Total de registros</span><strong id="statTotal">0</strong><small>Acumulado</small></article><article class="stat-card"><span>Registrados hoy</span><strong id="statToday">0</strong><small>Día actual</small></article><article class="stat-card"><span>Últimos 7 días</span><strong id="statWeek">0</strong><small>Actividad reciente</small></article><article class="stat-card"><span>Asesores activos</span><strong id="statAdvisors">0</strong><small>Con al menos un registro</small></article></div>
+          <article class="admin-card date-report-card">
+            <div class="card-heading"><div><h3>Inscripciones y pagos por fecha</h3><p>El pago se cuenta en la fecha en que el administrador confirmó la compra de la hoja.</p></div><span id="dateReportLabel" class="count-badge">Hoy</span></div>
+            <form id="dateReportForm" class="date-report-form">
+              <label class="field"><span>Desde</span><input id="reportDateFrom" type="date" required></label>
+              <label class="field"><span>Hasta</span><input id="reportDateTo" type="date" required></label>
+              <div class="date-report-actions"><button class="button button-primary" type="submit">Aplicar filtro</button><button id="reportTodayButton" class="button button-secondary" type="button">Hoy</button><button id="reportWeekButton" class="text-button" type="button">Últimos 7 días</button></div>
+            </form>
+            <p id="dateReportError" class="modal-error" role="alert"></p>
+            <div class="date-report-metrics">
+              <div><span>Inscripciones recibidas</span><strong id="rangeRegistrations">0</strong><small>Según fecha de registro</small></div>
+              <div class="is-paid"><span>Pagos confirmados</span><strong id="rangePayments">0</strong><small>Hojas compradas en el rango</small></div>
+              <div><span>Inscritos pendientes</span><strong id="rangePending">0</strong><small>Registrados en el rango sin pago</small></div>
+            </div>
+            <div class="range-payment-heading"><strong>Pagos del período</strong><span id="rangePaymentCount">0 pagos</span></div>
+            <div id="rangePaymentList" class="range-payment-list"></div>
+          </article>
           <div class="admin-grid-two">
             <article class="admin-card"><div class="card-heading"><div><h3>Registros por asesor</h3><p>Distribución del total recibido.</p></div></div><div id="advisorBreakdown" class="advisor-breakdown"></div></article>
             <article class="admin-card"><div class="card-heading"><div><h3>Últimos registros</h3><p>Los cinco más recientes.</p></div><button class="text-button" type="button" data-go-records>Ver todos</button></div><div id="recentRecords" class="recent-list"></div></article>
@@ -218,6 +249,10 @@
   </main>
 
   <footer id="publicFooter" class="site-footer"><p id="footerText">Logística &amp; Eventos · Equipo Verde · Uso exclusivo para inscripciones</p></footer>
+
+  <div id="accessTypeModal" class="modal-backdrop" hidden><section class="modal-card access-type-card" role="dialog" aria-modal="true" aria-labelledby="accessTypeTitle"><button class="modal-close" type="button" data-close-modal="accessTypeModal" aria-label="Cerrar">×</button><span class="eyebrow green-text">Selecciona tu acceso</span><h2 id="accessTypeTitle">¿Cómo quieres entrar?</h2><p>El administrador abre el control privado. El reclutador crea su enlace personalizado para recibir los carnés de sus aspirantes.</p><div class="access-choice-grid"><button id="chooseAdminAccess" class="access-choice" type="button"><span aria-hidden="true">🔒</span><strong>Administrador</strong><small>Panel, QR, registros y configuración</small></button><button id="chooseRecruiterAccess" class="access-choice" type="button"><span aria-hidden="true">↗</span><strong>Reclutador</strong><small>Crear enlace y recibir carnés</small></button></div></section></div>
+
+  <div id="recruiterModal" class="modal-backdrop" hidden><section class="modal-card recruiter-modal-card" role="dialog" aria-modal="true" aria-labelledby="recruiterModalTitle"><button class="modal-close" type="button" data-close-modal="recruiterModal" aria-label="Cerrar">×</button><div class="lock-badge">↗</div><span class="eyebrow green-text">Acceso de reclutador</span><h2 id="recruiterModalTitle">Crea tu enlace personalizado</h2><p>Las personas que se registren desde tu enlace quedarán asignadas a ti y podrán compartirte su carné por WhatsApp.</p><form id="recruiterForm"><div class="fields-grid modal-grid"><label class="field"><span>Nombre</span><input type="text" id="recruiterFirstName" autocomplete="given-name" maxlength="45" required></label><label class="field"><span>Apellido</span><input type="text" id="recruiterLastName" autocomplete="family-name" maxlength="45" required></label><label class="field field-full"><span>Número de WhatsApp</span><input type="tel" id="recruiterWhatsapp" autocomplete="tel" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="3001234567" required><small>Escribe 10 dígitos, sin espacios.</small></label></div><p id="recruiterFormError" class="modal-error" role="alert"></p><button class="button button-primary full-button" type="submit">Crear mi enlace de reclutador</button></form></section></div>
 
   <div id="adminLoginModal" class="modal-backdrop" hidden><section class="modal-card login-card" role="dialog" aria-modal="true" aria-labelledby="loginTitle"><button class="modal-close" type="button" data-close-modal="adminLoginModal" aria-label="Cerrar">×</button><div class="lock-badge">🔒</div><span class="eyebrow green-text">Acceso restringido</span><h2 id="loginTitle">Control administrativo</h2><p id="loginIntro">Ingresa con tu cuenta de administrador de Logística &amp; Eventos.</p><form id="adminLoginForm"><label class="field"><span>Correo</span><input type="email" id="adminEmail" autocomplete="username" required></label><label class="field"><span>Contraseña</span><input type="password" id="adminPassword" autocomplete="current-password" minlength="6" required></label><p id="loginError" class="modal-error" role="alert"></p><button id="adminLoginButton" class="button button-primary full-button" type="submit">Ingresar al control</button></form></section></div>
 

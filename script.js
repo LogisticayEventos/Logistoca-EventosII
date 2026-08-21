@@ -36,6 +36,9 @@ const linkedRecordParam = PAGE_PARAMS.get("registro") || "";
 const LINKED_RECORD_ID = /^[A-Za-z0-9_-]{4,120}$/.test(linkedRecordParam) ? linkedRecordParam : "";
 const SHOW_DEMO_CREDENTIAL = IS_DEMO && PAGE_PARAMS.get("credential") === "1";
 const CREDENTIAL_CACHE_KEY = "logisticaEventosCarnetsV1";
+const RECRUITER_CACHE_KEY = "logisticaEventosReclutadorV1";
+const RECRUITER_NAME_PARAM = "reclutador";
+const RECRUITER_WHATSAPP_PARAM = "contacto";
 
 const DEFAULT_CONTENT = {
   brandName: "LOGÍSTICA & EVENTOS",
@@ -142,6 +145,9 @@ let qrScannerBusy = false;
 let qrScannerLastCheck = 0;
 let qrDetector = null;
 let scannerRecordId = "";
+let recruiterContext = null;
+let currentDeliveryContact = null;
+let recruiterSetupMode = false;
 let photoState = { image: null, zoom: 1, panX: 0, panY: 0, dragging: false, pointerX: 0, pointerY: 0 };
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -150,7 +156,49 @@ function titleCase(value) { return String(value || "").trim().toLocaleLowerCase(
 function normalizeText(value) { return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
 function safeImage(value) { return /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(value || "") ? value : ""; }
 function timestampToDate(value) { if (!value) return null; if (typeof value.toDate === "function") return value.toDate(); const date = value instanceof Date ? value : new Date(value); return Number.isNaN(date.getTime()) ? null : date; }
-function formatDate(value, withTime = false) { const date = timestampToDate(value); if (!date) return "Pendiente"; return new Intl.DateTimeFormat("es-CO", withTime ? { dateStyle:"medium", timeStyle:"short" } : { dateStyle:"medium" }).format(date); }
+function formatDate(value, withTime = false) { const date = timestampToDate(value); if (!date) return "Pendiente"; return new Intl.DateTimeFormat("es-CO", withTime ? { timeZone:"America/Bogota", dateStyle:"medium", timeStyle:"short" } : { timeZone:"America/Bogota", dateStyle:"medium" }).format(date); }
+
+function normalizeRecruiterContext(value = {}) {
+  const firstName=titleCase(String(value.firstName||"").replace(/[^\p{L}\s'-]/gu,"").replace(/\s+/g," ").slice(0,45));
+  const lastName=titleCase(String(value.lastName||"").replace(/[^\p{L}\s'-]/gu,"").replace(/\s+/g," ").slice(0,45));
+  const whatsapp=String(value.whatsapp||"").replace(/\D/g,"");
+  if(!firstName||!lastName||!/^[3]\d{9}$/.test(whatsapp))return null;
+  return {firstName,lastName,name:`${firstName} ${lastName}`,whatsapp};
+}
+
+function recruiterContextFromUrl() {
+  const name=String(PAGE_PARAMS.get(RECRUITER_NAME_PARAM)||"").trim().split(/\s+/);
+  if(name.length<2)return null;
+  return normalizeRecruiterContext({firstName:name.shift(),lastName:name.join(" "),whatsapp:PAGE_PARAMS.get(RECRUITER_WHATSAPP_PARAM)||""});
+}
+
+function readStoredRecruiterContext() {
+  try{return normalizeRecruiterContext(JSON.parse(localStorage.getItem(RECRUITER_CACHE_KEY)||"null")||{});}catch{return null;}
+}
+
+function storeRecruiterContext(context) {
+  try{localStorage.setItem(RECRUITER_CACHE_KEY,JSON.stringify(context));}catch(error){console.warn("No se pudieron recordar los datos del reclutador",error);}
+}
+
+function normalizedWhatsappTarget(value) {
+  const digits=String(value||"").replace(/\D/g,"");
+  if(/^3\d{9}$/.test(digits))return`57${digits}`;
+  return digits;
+}
+
+function personalizedRecruiterUrl(context=recruiterContext) {
+  if(!context)return location.href;
+  const url=new URL(location.href);url.search="";url.hash="";
+  url.searchParams.set(RECRUITER_NAME_PARAM,context.name);url.searchParams.set(RECRUITER_WHATSAPP_PARAM,context.whatsapp);
+  return url.toString();
+}
+
+function recruiterContactFromRecord(record={}) {
+  let answers={};try{answers=JSON.parse(record.answersJson||"{}");}catch{}
+  const name=record.recruiterName||answers.recruiterName;const whatsapp=record.recruiterWhatsapp||answers.recruiterWhatsapp;
+  if(name&&whatsapp){const parts=String(name).trim().split(/\s+/);return normalizeRecruiterContext({firstName:parts.shift(),lastName:parts.join(" "),whatsapp});}
+  return null;
+}
 
 function normalizeContent(value = {}) {
   const clean = {};
@@ -237,7 +285,70 @@ function renderAllQuestions(preserveValues = false) {
     questions.filter((question) => question.step === step).forEach((question) => container.append(renderQuestion(question)));
   }
   if (preserveValues) restoreAnswers(values);
+  applyRecruiterContextToForm();
   updateMinorQuestions();
+}
+
+function applyRecruiterContextToForm() {
+  const advisorSelect=$("q-advisor");const wrapper=advisorSelect?.closest("[data-question-wrapper]");
+  if(!advisorSelect||!wrapper)return;
+  wrapper.classList.toggle("is-recruiter-assigned",Boolean(recruiterContext));
+  wrapper.querySelector(".recruiter-assignment-help")?.remove();
+  if(!recruiterContext){advisorSelect.disabled=false;advisorSelect.removeAttribute("aria-readonly");return;}
+  if(![...advisorSelect.options].some((option)=>option.value===recruiterContext.name)){
+    const option=document.createElement("option");option.value=recruiterContext.name;option.textContent=recruiterContext.name;advisorSelect.append(option);
+  }
+  advisorSelect.value=recruiterContext.name;advisorSelect.disabled=true;advisorSelect.setAttribute("aria-readonly","true");
+  const help=document.createElement("small");help.className="recruiter-assignment-help";help.textContent=`Asignado automáticamente por el enlace de ${recruiterContext.name}.`;wrapper.append(help);
+}
+
+function renderRecruiterContextBanner() {
+  const banner=$("recruiterContextBanner");if(!banner)return;
+  banner.hidden=!recruiterContext;if(!recruiterContext)return;
+  setText("recruiterContextName",recruiterContext.name);setText("recruiterContextWhatsapp",`WhatsApp: ${formatWhatsapp(recruiterContext.whatsapp)}`);
+  const actions=banner.querySelector(".recruiter-context-actions");if(actions)actions.hidden=!recruiterSetupMode;
+}
+
+async function copyText(value) {
+  if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);return;}
+  const area=document.createElement("textarea");area.value=value;area.setAttribute("readonly","");area.style.position="fixed";area.style.opacity="0";document.body.append(area);area.select();document.execCommand("copy");area.remove();
+}
+
+async function copyRecruiterLink() {
+  if(!recruiterContext)return;
+  try{await copyText(personalizedRecruiterUrl());showToast("Enlace personalizado copiado.");}catch{showToast("No fue posible copiar el enlace.");}
+}
+
+async function shareRecruiterLink() {
+  if(!recruiterContext)return;
+  const url=personalizedRecruiterUrl();
+  try{
+    if(navigator.share)await navigator.share({title:`Inscripción con ${recruiterContext.name}`,text:"Completa tu inscripción y recibe tu carné digital.",url});
+    else await copyRecruiterLink();
+  }catch(error){if(error?.name!=="AbortError")showToast("No fue posible compartir el enlace.");}
+}
+
+function openAccessChooser() {
+  if(LINKED_RECORD_ID)return openAdminAccess();
+  openModal("accessTypeModal");
+}
+
+function openRecruiterSetup() {
+  closeModal("accessTypeModal");const saved=recruiterContext||readStoredRecruiterContext();
+  $("recruiterForm").reset();$("recruiterFormError").textContent="";
+  if(saved){$("recruiterFirstName").value=saved.firstName;$("recruiterLastName").value=saved.lastName;$("recruiterWhatsapp").value=saved.whatsapp;}
+  openModal("recruiterModal");setTimeout(()=>$("recruiterFirstName").focus(),100);
+}
+
+function saveRecruiterSetup(event) {
+  event.preventDefault();const editor=$("recruiterForm");$("recruiterFormError").textContent="";
+  if(!editor.reportValidity())return;
+  const next=normalizeRecruiterContext({firstName:$("recruiterFirstName").value,lastName:$("recruiterLastName").value,whatsapp:$("recruiterWhatsapp").value});
+  if(!next){$("recruiterFormError").textContent="Revisa el nombre, apellido y WhatsApp. El número debe comenzar por 3 y tener 10 dígitos.";return;}
+  recruiterContext=next;currentDeliveryContact=next;recruiterSetupMode=true;storeRecruiterContext(next);
+  const url=new URL(personalizedRecruiterUrl(next));history.replaceState({},"",`${url.pathname}${url.search}${url.hash}`);
+  renderAllQuestions(true);renderRecruiterContextBanner();updateWhatsappLink();closeModal("recruiterModal");showToast("Enlace de reclutador listo para compartir.");
+  $("recruiterContextBanner").scrollIntoView({behavior:"smooth",block:"center"});
 }
 
 function requiredMark(question) { return question.required ? " *" : ""; }
@@ -328,7 +439,11 @@ function restoreAnswers(values) {
     if (["radio","checkbox"].includes(question.type)) {
       const selected = Array.isArray(value) ? value : [value];
       form.querySelectorAll(`[name="answer-${question.id}"]`).forEach((input) => { input.checked = selected.includes(input.value); });
-    } else if ($(`q-${question.id}`)) $(`q-${question.id}`).value = value;
+    } else if ($(`q-${question.id}`)) {
+      const input=$(`q-${question.id}`);
+      if(input.tagName==="SELECT"&&value&&![...input.options].some((option)=>option.value===String(value))){const option=document.createElement("option");option.value=String(value);option.textContent=String(value);input.append(option);}
+      input.value=value;
+    }
   });
 }
 
@@ -538,7 +653,9 @@ function writeCredentialCache(items) {
 
 function currentCredentialSnapshot(savedOnline) {
   const values=collectAnswers();values.meetingConsent=$("meetingConsent").checked;values.privacyConsent=$("privacyConsent").checked;
-  return {id:registrationId,firstName:titleCase(values.firstName),lastName:titleCase(values.lastName),age:Number(values.age),gender:String(values.gender),advisor:String(values.advisor),team:TEAM_NAME,whatsapp:String(values.whatsapp),phone:String(values.phone),document:String(values.document),photoData:compressedPhotoData(),answersJson:JSON.stringify(values),cachedAt:Date.now(),savedOnline:Boolean(savedOnline)};
+  const delivery=currentDeliveryContact||recruiterContext;
+  if(delivery){values.recruiterName=delivery.name;values.recruiterWhatsapp=delivery.whatsapp;}
+  return {id:registrationId,firstName:titleCase(values.firstName),lastName:titleCase(values.lastName),age:Number(values.age),gender:String(values.gender),advisor:String(values.advisor),team:TEAM_NAME,whatsapp:String(values.whatsapp),phone:String(values.phone),document:String(values.document),photoData:compressedPhotoData(),answersJson:JSON.stringify(values),recruiterName:delivery?.name||"",recruiterWhatsapp:delivery?.whatsapp||"",cachedAt:Date.now(),savedOnline:Boolean(savedOnline)};
 }
 
 function cacheCurrentCredential(savedOnline) {
@@ -563,6 +680,7 @@ function imageFromDataUrl(source) {
 async function showCredentialRecord(record,onlineVerified=false) {
   let values={};try{values=JSON.parse(record.answersJson||"{}");}catch{}
   values={...values,firstName:record.firstName||values.firstName,lastName:record.lastName||values.lastName,age:String(record.age||values.age||""),gender:record.gender||values.gender,advisor:record.advisor||values.advisor,whatsapp:record.whatsapp||values.whatsapp,phone:record.phone||values.phone,document:record.document||values.document};
+  currentDeliveryContact=recruiterContactFromRecord(record)||recruiterContext;
   renderAllQuestions();restoreAnswers(values);updateMinorQuestions();
   const image=await imageFromDataUrl(safeImage(record.photoData));photoState={image,zoom:1,panX:0,panY:0,dragging:false,pointerX:0,pointerY:0};registrationId=String(record.id);applyContent();await drawCredential();updateWhatsappLink();
   const notice=$("sendNotice");notice.className=onlineVerified||record.savedOnline?"notice notice-success":"notice notice-warning";notice.querySelector("p").textContent=onlineVerified?"Tu carné fue recuperado desde el registro guardado en el sistema.":"Tu carné fue recuperado desde la copia segura de este dispositivo.";
@@ -598,9 +716,26 @@ async function shareCredential() {
   catch(error){if(error?.name!=="AbortError")showToast("No fue posible compartir el carné.");}
 }
 
+async function sendCredentialToRecruiter() {
+  const delivery=currentDeliveryContact||recruiterContext;if(!delivery)return shareCredential();
+  try {
+    const blob=await credentialBlob();const file=new File([blob],generatedFileName,{type:"image/png"});
+    if(navigator.share&&(!navigator.canShare||navigator.canShare({files:[file]}))){
+      await navigator.share({title:`Carné para ${delivery.name}`,text:`Hola ${delivery.firstName}, comparto mi carné de pre-registro ${registrationId}.`,files:[file]});
+      showToast(`Carné compartido desde el teléfono. Verifica el envío a ${delivery.name}.`);
+    }else{
+      await downloadCredential();showToast(`Carné descargado. Abre el chat de ${delivery.name} y adjunta el PNG.`);
+    }
+  }catch(error){if(error?.name!=="AbortError")showToast("No fue posible preparar el carné para compartir.");}
+}
+
 function updateWhatsappLink() {
-  const message=["Hola, ya completé mi inscripción en Logística & Eventos.",`Nombre: ${titleCase(answer("firstName"))} ${titleCase(answer("lastName"))}`,`Asesor(a): ${answer("advisor")}`,`Equipo: ${TEAM_NAME}`,`Código: ${registrationId||"pendiente"}`,"Adjunto mi carné digital."].join("\n");
-  $("whatsappButton").href=`https://wa.me/${content.companyWhatsapp}?text=${encodeURIComponent(message)}`;
+  const delivery=currentDeliveryContact||recruiterContext;const target=normalizedWhatsappTarget(delivery?.whatsapp||content.companyWhatsapp);
+  const greeting=delivery?`Hola ${delivery.firstName}, ya completé mi inscripción en Logística & Eventos.`:"Hola, ya completé mi inscripción en Logística & Eventos.";
+  const message=[greeting,`Nombre: ${titleCase(answer("firstName"))} ${titleCase(answer("lastName"))}`,`Asesor(a): ${answer("advisor")}`,`Equipo: ${TEAM_NAME}`,`Código: ${registrationId||"pendiente"}`,"Adjunto mi carné digital."].join("\n");
+  const url=`https://wa.me/${target}?text=${encodeURIComponent(message)}`;$("whatsappButton").href=url;$("whatsappButton").textContent=delivery?`WhatsApp de ${delivery.firstName}`:content.whatsappButtonText;
+  const panel=$("recruiterDeliveryPanel");if(!panel)return;panel.hidden=!delivery;
+  if(delivery){setText("recruiterDeliveryTitle",`Envía tu carné a ${delivery.name}`);setText("recruiterDeliveryHelp",`WhatsApp ${formatWhatsapp(delivery.whatsapp)}. Comparte el PNG y selecciona su chat; también puedes abrir la conversación directamente.`);$("sendCredentialToRecruiter").textContent=`Compartir con ${delivery.firstName}`;$("openRecruiterWhatsapp").href=url;$("openRecruiterWhatsapp").textContent=`Abrir chat de ${delivery.firstName}`;}
 }
 
 async function initializeBackend() {
@@ -633,6 +768,7 @@ function subscribeQuestionConfig() {
 
 async function saveRegistration() {
   const values=collectAnswers();
+  if(recruiterContext){values.advisor=recruiterContext.name;values.recruiterName=recruiterContext.name;values.recruiterWhatsapp=recruiterContext.whatsapp;}
   values.meetingConsent=$("meetingConsent").checked;values.privacyConsent=$("privacyConsent").checked;
   const payload={
     firstName:titleCase(values.firstName),lastName:titleCase(values.lastName),age:Number(values.age),gender:String(values.gender),advisor:String(values.advisor),team:TEAM_NAME,
@@ -648,9 +784,9 @@ function demoRecords() {
   const now=Date.now();
   const andreaAnswers={advisor:"Fran Santamaria",firstName:"Andrea",lastName:"Rojas",phone:"3001112233",whatsapp:"3001112233",document:"1023456789",age:"19",gender:"Femenino",address:"Bogotá, barrio Restrepo",events:["Logística","Conciertos"],places:["Bogotá","Soacha"],shirtSize:"M",pantsSize:"30",payment:["Nequi"],schedules:["02:00 pm - 07:00 pm"],peopleAges:["15 - 20 años","20 en adelante"],experience:"Apoyo logístico en eventos familiares.",nextWeek:"Sí",days:["Viernes","Sábado","Domingo"],disease:"No",swim:"Sí",sport:"Sí",understands:"Sí",meetingConsent:true,privacyConsent:true};
   return [
-    {id:"DEMO-001",firstName:"Andrea",lastName:"Rojas",age:19,gender:"Femenino",advisor:"Fran Santamaria",team:"Verde",document:"1023456789",whatsapp:"3001112233",phone:"3001112233",photoData:"",answersJson:JSON.stringify(andreaAnswers),status:"Nuevo",createdAt:new Date(now-45*60000)},
+    {id:"DEMO-001",firstName:"Andrea",lastName:"Rojas",age:19,gender:"Femenino",advisor:"Fran Santamaria",team:"Verde",document:"1023456789",whatsapp:"3001112233",phone:"3001112233",photoData:"",answersJson:JSON.stringify(andreaAnswers),status:"Nuevo",createdAt:new Date(now-45*60000),registrationSheetPurchased:true,registrationSheetPurchasedAt:new Date(now-30*60000),registrationSheetPurchasedBy:"admin@demo.local"},
     {id:"DEMO-002",firstName:"Daniel",lastName:"Gómez",age:21,gender:"Masculino",advisor:"Vanessa Barragan",team:"Verde",document:"1023456790",whatsapp:"3002223344",phone:"3002223344",photoData:"",answersJson:"{}",status:"Nuevo",createdAt:new Date(now-24*3600000)},
-    {id:"DEMO-003",firstName:"Laura",lastName:"Martínez",age:18,gender:"Femenino",advisor:"Fran Santamaria",team:"Verde",document:"1023456791",whatsapp:"3003334455",phone:"3003334455",photoData:"",answersJson:"{}",status:"Nuevo",createdAt:new Date(now-3*86400000)},
+    {id:"DEMO-003",firstName:"Laura",lastName:"Martínez",age:18,gender:"Femenino",advisor:"Fran Santamaria",team:"Verde",document:"1023456791",whatsapp:"3003334455",phone:"3003334455",photoData:"",answersJson:"{}",status:"Nuevo",createdAt:new Date(now-3*86400000),registrationSheetPurchased:true,registrationSheetPurchasedAt:new Date(now-2*86400000),registrationSheetPurchasedBy:"admin@demo.local"},
   ];
 }
 
@@ -663,6 +799,7 @@ async function showDemoCredential() {
 
 async function submitRegistration(event) {
   event.preventDefault(); if(isSubmitting||!validateStep(4))return;
+  currentDeliveryContact=recruiterContext;
   isSubmitting=true;$("submitButton").disabled=true;$("submitButton").classList.add("is-loading");$("submitStatus").className="submit-status is-info";$("submitStatus").textContent="Guardando la inscripción y creando el carné…";
   let saved=true;
   try { registrationId=await saveRegistration(); }
@@ -868,13 +1005,54 @@ async function markRegistrationSheetPurchased(id) {
   finally{setLoading(false);}
 }
 
+function localDateInputValue(date=new Date()) {
+  const parts=Object.fromEntries(new Intl.DateTimeFormat("en-CA",{timeZone:"America/Bogota",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(date).filter((part)=>part.type!=="literal").map((part)=>[part.type,part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function localDateFromInput(value,endOfDay=false) {
+  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value||""));if(!match)return null;
+  const date=new Date(`${match[1]}-${match[2]}-${match[3]}T${endOfDay?"23:59:59.999":"00:00:00.000"}-05:00`);
+  return Number.isNaN(date.getTime())?null:date;
+}
+
+function shiftDateInput(value,days) {
+  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value||""));if(!match)return value;
+  const date=new Date(Date.UTC(Number(match[1]),Number(match[2])-1,Number(match[3])+days));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,"0")}-${String(date.getUTCDate()).padStart(2,"0")}`;
+}
+
+function initializeDateReportInputs() {
+  if(!$("reportDateFrom")||!$("reportDateTo"))return;
+  const today=localDateInputValue();if(!$("reportDateFrom").value)$("reportDateFrom").value=today;if(!$("reportDateTo").value)$("reportDateTo").value=today;
+}
+
+function setDateReportRange(days) {
+  const end=localDateInputValue();const start=shiftDateInput(end,-Math.max(0,days-1));
+  $("reportDateFrom").value=start;$("reportDateTo").value=end;renderDateReport();
+}
+
+function renderDateReport() {
+  if(!$("dateReportForm"))return;initializeDateReportInputs();
+  const start=localDateFromInput($("reportDateFrom").value);const end=localDateFromInput($("reportDateTo").value,true);const error=$("dateReportError");error.textContent="";
+  if(!start||!end||start>end){error.textContent="La fecha inicial debe ser igual o anterior a la fecha final.";return;}
+  const inRange=(value)=>{const date=timestampToDate(value);return Boolean(date&&date>=start&&date<=end);};
+  const registrations=records.filter((record)=>inRange(record.createdAt));
+  const payments=records.filter((record)=>record.registrationSheetPurchased===true&&inRange(record.registrationSheetPurchasedAt)).sort((a,b)=>(timestampToDate(b.registrationSheetPurchasedAt)?.getTime()||0)-(timestampToDate(a.registrationSheetPurchasedAt)?.getTime()||0));
+  const pending=registrations.filter((record)=>record.registrationSheetPurchased!==true);
+  setText("rangeRegistrations",registrations.length);setText("rangePayments",payments.length);setText("rangePending",pending.length);setText("rangePaymentCount",`${payments.length} ${payments.length===1?"pago":"pagos"}`);
+  const labelFormat=new Intl.DateTimeFormat("es-CO",{timeZone:"America/Bogota",day:"numeric",month:"short",year:"numeric"});setText("dateReportLabel",localDateInputValue(start)===localDateInputValue(end)?labelFormat.format(start):`${labelFormat.format(start)} – ${labelFormat.format(end)}`);
+  $("rangePaymentList").innerHTML=payments.length?payments.map((record)=>`<button class="range-payment-item" type="button" data-view-record="${escapeHTML(record.id)}"><span class="range-payment-status" aria-hidden="true">✓</span><span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor||"Sin asesor")} · ${escapeHTML(formatDate(record.registrationSheetPurchasedAt,true))}</small></span><span class="purchase-badge is-complete">Pagada</span></button>`).join(""):`<div class="range-payment-empty"><span aria-hidden="true">$</span><p>No hay pagos confirmados en estas fechas.</p></div>`;
+}
+
 function renderDashboard() {
-  const now=new Date();const startToday=new Date(now.getFullYear(),now.getMonth(),now.getDate());const weekAgo=new Date(now.getTime()-7*86400000);const counts={};
+  const today=localDateInputValue();const startToday=localDateFromInput(today);const weekAgo=localDateFromInput(shiftDateInput(today,-6));const counts={};
   records.forEach((record)=>{const advisor=record.advisor||"Sin asesor";counts[advisor]=(counts[advisor]||0)+1;});
-  $("statTotal").textContent=records.length;$("statToday").textContent=records.filter((r)=>timestampToDate(r.createdAt)>=startToday).length;$("statWeek").textContent=records.filter((r)=>timestampToDate(r.createdAt)>=weekAgo).length;$("statAdvisors").textContent=Object.keys(counts).length;
+  $("statTotal").textContent=records.length;$("statToday").textContent=records.filter((r)=>{const date=timestampToDate(r.createdAt);return date&&date>=startToday;}).length;$("statWeek").textContent=records.filter((r)=>{const date=timestampToDate(r.createdAt);return date&&date>=weekAgo;}).length;$("statAdvisors").textContent=Object.keys(counts).length;
   const entries=Object.entries(counts).sort((a,b)=>b[1]-a[1]);const max=Math.max(1,...entries.map(([,count])=>count));
   $("advisorBreakdown").innerHTML=entries.length?entries.map(([name,count])=>`<div class="advisor-row"><span title="${escapeHTML(name)}">${escapeHTML(name)}</span><div class="advisor-bar"><span style="width:${Math.max(4,(count/max)*100)}%"></span></div><strong>${count}</strong></div>`).join(""):`<div class="empty-state"><p>Aún no hay registros.</p></div>`;
   $("recentRecords").innerHTML=records.slice(0,5).map((record)=>`<button class="recent-item" type="button" data-view-record="${escapeHTML(record.id)}">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor||"Sin asesor")}</small></span><time>${escapeHTML(formatDate(record.createdAt))}</time></button>`).join("")||`<div class="empty-state"><p>Aún no hay registros.</p></div>`;
+  renderDateReport();
 }
 
 function recordPhoto(record,className="") {
@@ -889,7 +1067,7 @@ function renderAdvisorFilter() {
 
 function renderRecords() {
   const search=normalizeText($("recordSearch").value);const advisor=$("advisorFilter").value;
-  filteredRecords=records.filter((record)=>{const haystack=normalizeText(`${record.firstName} ${record.lastName} ${record.document} ${record.advisor}`);return(!search||haystack.includes(search))&&(!advisor||record.advisor===advisor);});
+  filteredRecords=records.filter((record)=>{const recruiter=recruiterContactFromRecord(record);const haystack=normalizeText(`${record.firstName} ${record.lastName} ${record.document} ${record.advisor} ${recruiter?.name||""} ${recruiter?.whatsapp||""}`);return(!search||haystack.includes(search))&&(!advisor||record.advisor===advisor);});
   $("recordCountBadge").textContent=`${filteredRecords.length} ${filteredRecords.length===1?"registro":"registros"}`;$("recordsEmpty").hidden=filteredRecords.length>0;
   $("recordsTableBody").innerHTML=filteredRecords.map((record)=>`<tr><td><div class="person-cell">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.document)}</small></span></div></td><td>${escapeHTML(record.age)}</td><td>${escapeHTML(record.gender)}</td><td>${escapeHTML(record.advisor)}</td><td><span class="team-badge">${escapeHTML(record.team||TEAM_NAME)}</span></td><td>${sheetPurchaseBadge(record)}</td><td>${escapeHTML(formatDate(record.createdAt,true))}</td><td><button class="table-action" type="button" data-view-record="${escapeHTML(record.id)}">Ver</button></td></tr>`).join("");
   $("recordsMobile").innerHTML=filteredRecords.map((record)=>`<button class="mobile-record" type="button" data-view-record="${escapeHTML(record.id)}">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor)} · ${record.registrationSheetPurchased===true?"Hoja comprada":"Hoja pendiente"} · ${escapeHTML(formatDate(record.createdAt))}</small></span><span>›</span></button>`).join("");
@@ -897,11 +1075,11 @@ function renderRecords() {
 
 function recordAnswerItems(record) {
   let stored={};try{stored=JSON.parse(record.answersJson||"{}");}catch{}
-  const values={advisor:record.advisor,firstName:record.firstName,lastName:record.lastName,phone:record.phone,whatsapp:record.whatsapp,document:record.document,age:record.age,gender:record.gender,...stored};
+  const values={advisor:record.advisor,firstName:record.firstName,lastName:record.lastName,phone:record.phone,whatsapp:record.whatsapp,document:record.document,age:record.age,gender:record.gender,...stored,recruiterName:record.recruiterName||stored.recruiterName,recruiterWhatsapp:record.recruiterWhatsapp||stored.recruiterWhatsapp};
   const used=new Set();const items=[];
   const hasValue=(value)=>value!==undefined&&value!==null&&value!==""&&(!Array.isArray(value)||value.length>0);
   questions.forEach((question)=>{const value=values[question.id];used.add(question.id);if(hasValue(value))items.push({label:question.label,value});});
-  const labels={meetingConsent:"Asistencia a la reunión confirmada",privacyConsent:"Tratamiento de datos autorizado"};
+  const labels={meetingConsent:"Asistencia a la reunión confirmada",privacyConsent:"Tratamiento de datos autorizado",recruiterName:"Reclutador asignado",recruiterWhatsapp:"WhatsApp del reclutador"};
   Object.entries(values).forEach(([key,value])=>{if(used.has(key)||!hasValue(value))return;items.push({label:labels[key]||titleCase(key.replace(/[-_]+/g," ")),value});});
   return items;
 }
@@ -1017,12 +1195,14 @@ function attachEvents() {
   form.addEventListener("input",(event)=>{clearInvalid(event.target);event.target.closest("[data-required-group]")?.classList.remove("is-invalid");if(event.target.matches('input[type="tel"],input[data-question-id="document"]'))event.target.value=event.target.value.replace(/\D/g,"");});
   form.addEventListener("change",(event)=>{clearInvalid(event.target);event.target.closest("[data-required-group]")?.classList.remove("is-invalid");if(event.target.dataset.questionId==="age")updateMinorQuestions();});
   $("restoreSavedCredentialButton").addEventListener("click",restoreSavedCredential);$("forgetSavedCredentialButton").addEventListener("click",forgetSavedCredential);
-  $("editPersonalButton").addEventListener("click",()=>showStep(1));$("downloadCredential").addEventListener("click",downloadCredential);$("shareCredential").addEventListener("click",shareCredential);$("restartButton").addEventListener("click",()=>location.reload());
-  $("adminAccessButton").addEventListener("click",openAdminAccess);$("adminLoginForm").addEventListener("submit",loginAdmin);$("closeAdminButton").addEventListener("click",closeAdminView);$("logoutAdminButton").addEventListener("click",logoutAdmin);$("refreshAdminButton").addEventListener("click",()=>{if(IS_DEMO)renderAdminData();else loadAdminRecords();showToast("Información actualizada.");});
+  $("editPersonalButton").addEventListener("click",()=>showStep(1));$("downloadCredential").addEventListener("click",downloadCredential);$("shareCredential").addEventListener("click",shareCredential);$("sendCredentialToRecruiter").addEventListener("click",sendCredentialToRecruiter);$("restartButton").addEventListener("click",()=>location.reload());
+  $("copyRecruiterLinkButton").addEventListener("click",copyRecruiterLink);$("shareRecruiterLinkButton").addEventListener("click",shareRecruiterLink);$("editRecruiterContextButton").addEventListener("click",openRecruiterSetup);
+  $("adminAccessButton").addEventListener("click",openAccessChooser);$("chooseAdminAccess").addEventListener("click",()=>{closeModal("accessTypeModal");openAdminAccess();});$("chooseRecruiterAccess").addEventListener("click",openRecruiterSetup);$("recruiterForm").addEventListener("submit",saveRecruiterSetup);$("recruiterWhatsapp").addEventListener("input",(event)=>{event.target.value=event.target.value.replace(/\D/g,"");});
+  $("adminLoginForm").addEventListener("submit",loginAdmin);$("closeAdminButton").addEventListener("click",closeAdminView);$("logoutAdminButton").addEventListener("click",logoutAdmin);$("refreshAdminButton").addEventListener("click",()=>{if(IS_DEMO)renderAdminData();else loadAdminRecords();showToast("Información actualizada.");});
   document.querySelectorAll("[data-admin-tab]").forEach((button)=>button.addEventListener("click",()=>showAdminTab(button.dataset.adminTab)));document.querySelectorAll("[data-go-records]").forEach((button)=>button.addEventListener("click",()=>showAdminTab("records")));
   $("startQrScannerButton").addEventListener("click",startQrScanner);$("stopQrScannerButton").addEventListener("click",()=>{stopQrScanner();setScannerStatus("Cámara detenida.");});$("qrScannerImageInput").addEventListener("change",scanQrImage);
   $("scannerManualForm").addEventListener("submit",async(event)=>{event.preventDefault();stopQrScanner();await findScannerRecord($("scannerManualInput").value);});
-  $("recordSearch").addEventListener("input",renderRecords);$("advisorFilter").addEventListener("change",renderRecords);$("contentForm").addEventListener("submit",saveContent);$("restoreDefaultContentButton").addEventListener("click",restoreDefaultContent);$("addQuestionButton").addEventListener("click",()=>openQuestionEditor());$("questionType").addEventListener("change",toggleQuestionOptions);$("questionForm").addEventListener("submit",saveQuestion);
+  $("recordSearch").addEventListener("input",renderRecords);$("advisorFilter").addEventListener("change",renderRecords);$("dateReportForm").addEventListener("submit",(event)=>{event.preventDefault();renderDateReport();});$("reportTodayButton").addEventListener("click",()=>setDateReportRange(1));$("reportWeekButton").addEventListener("click",()=>setDateReportRange(7));$("contentForm").addEventListener("submit",saveContent);$("restoreDefaultContentButton").addEventListener("click",restoreDefaultContent);$("addQuestionButton").addEventListener("click",()=>openQuestionEditor());$("questionType").addEventListener("change",toggleQuestionOptions);$("questionForm").addEventListener("submit",saveQuestion);
   document.addEventListener("click",(event)=>{
     const close=event.target.closest("[data-close-modal]");if(close)closeModal(close.dataset.closeModal);
     const view=event.target.closest("[data-view-record]");if(view)showRecord(view.dataset.viewRecord);
@@ -1035,17 +1215,19 @@ function attachEvents() {
   document.querySelectorAll(".modal-backdrop").forEach((backdrop)=>backdrop.addEventListener("click",(event)=>{if(event.target===backdrop&&backdrop.id!=="confirmModal")closeModal(backdrop.id);}));
   $("cancelConfirmButton").addEventListener("click",()=>resolveConfirm(false));$("acceptConfirmButton").addEventListener("click",()=>resolveConfirm(true));
   document.addEventListener("visibilitychange",()=>{if(document.hidden)stopQrScanner();});
-  document.addEventListener("keydown",(event)=>{if(event.key==="Escape"){const open=document.querySelector(".modal-backdrop:not([hidden])");if(open&&open.id!=="confirmModal")closeModal(open.id);}if(event.ctrlKey&&event.altKey&&event.key.toLowerCase()==="a"){event.preventDefault();openAdminAccess();}});
+  document.addEventListener("keydown",(event)=>{if(event.key==="Escape"){const open=document.querySelector(".modal-backdrop:not([hidden])");if(open&&open.id!=="confirmModal")closeModal(open.id);}if(event.ctrlKey&&event.altKey&&event.key.toLowerCase()==="a"){event.preventDefault();openAccessChooser();}});
 }
 
 function attachPhotoEvents() {
-  $("photoInput").addEventListener("change",()=>{
-    const file=$("photoInput").files?.[0];$("photoError").classList.remove("is-visible");if(!file)return;
-    if(!file.type.startsWith("image/")||file.size>8*1024*1024){$("photoInput").value="";$("photoError").textContent="Usa una imagen JPG, PNG o WEBP de máximo 8 MB.";$("photoError").classList.add("is-visible");return showToast("La foto no es válida o supera los 8 MB.");}
+  const loadSelectedPhoto=(input,source)=>{
+    const file=input.files?.[0];$("photoError").classList.remove("is-visible");if(!file)return;
+    if(!file.type.startsWith("image/")||file.size>8*1024*1024){input.value="";$("photoError").textContent="Usa una imagen JPG, PNG o WEBP de máximo 8 MB.";$("photoError").classList.add("is-visible");return showToast("La foto no es válida o supera los 8 MB.");}
     const image=new Image();const url=URL.createObjectURL(file);
-    image.onload=()=>{URL.revokeObjectURL(url);photoState={image,zoom:1,panX:0,panY:0,dragging:false,pointerX:0,pointerY:0};$("photoZoom").disabled=false;$("photoZoom").value="1";$("zoomOutput").textContent="100%";$("photoFileName").textContent=file.name;drawPhotoEditor();showToast("Foto cargada. Arrástrala para centrarla.");};
-    image.onerror=()=>{URL.revokeObjectURL(url);$("photoInput").value="";$("photoError").textContent="No pudimos abrir esa imagen.";$("photoError").classList.add("is-visible");};image.src=url;
-  });
+    image.onload=()=>{URL.revokeObjectURL(url);photoState={image,zoom:1,panX:0,panY:0,dragging:false,pointerX:0,pointerY:0};$("photoZoom").disabled=false;$("photoZoom").value="1";$("zoomOutput").textContent="100%";$("photoFileName").textContent=source==="camera"?"Foto tomada con la cámara":file.name;drawPhotoEditor();showToast("Foto cargada. Arrástrala para centrarla.");};
+    image.onerror=()=>{URL.revokeObjectURL(url);input.value="";$("photoError").textContent="No pudimos abrir esa imagen.";$("photoError").classList.add("is-visible");};image.src=url;
+  };
+  $("photoCameraInput").addEventListener("change",()=>loadSelectedPhoto($("photoCameraInput"),"camera"));
+  $("photoInput").addEventListener("change",()=>loadSelectedPhoto($("photoInput"),"gallery"));
   $("photoZoom").addEventListener("input",()=>{photoState.zoom=Number($("photoZoom").value);$("zoomOutput").textContent=`${Math.round(photoState.zoom*100)}%`;drawPhotoEditor();});
   photoCanvas.addEventListener("pointerdown",(event)=>{if(!photoState.image)return;photoState.dragging=true;photoState.pointerX=event.clientX;photoState.pointerY=event.clientY;photoCanvas.setPointerCapture(event.pointerId);});
   photoCanvas.addEventListener("pointermove",(event)=>{if(!photoState.dragging||!photoState.image)return;const rect=photoCanvas.getBoundingClientRect();photoState.panX+=(event.clientX-photoState.pointerX)*(photoCanvas.width/rect.width);photoState.panY+=(event.clientY-photoState.pointerY)*(photoCanvas.height/rect.height);photoState.pointerX=event.clientX;photoState.pointerY=event.clientY;drawPhotoEditor();});
@@ -1053,7 +1235,8 @@ function attachPhotoEvents() {
 }
 
 async function init() {
-  renderAllQuestions();applyContent();renderSavedCredentialPanel();drawPhotoPlaceholder();attachEvents();attachPhotoEvents();showStep(1,false);showConnection("Conectando con el sistema de inscripciones…");await initializeBackend();renderSavedCredentialPanel();await loadCredentialLogo();
+  recruiterContext=recruiterContextFromUrl();currentDeliveryContact=recruiterContext;const savedRecruiter=readStoredRecruiterContext();recruiterSetupMode=Boolean(recruiterContext&&savedRecruiter&&savedRecruiter.name===recruiterContext.name&&savedRecruiter.whatsapp===recruiterContext.whatsapp);
+  renderAllQuestions();applyContent();renderRecruiterContextBanner();renderSavedCredentialPanel();drawPhotoPlaceholder();attachEvents();attachPhotoEvents();showStep(1,false);showConnection("Conectando con el sistema de inscripciones…");await initializeBackend();renderSavedCredentialPanel();await loadCredentialLogo();
   if(LINKED_RECORD_ID)await openAdminAccess();else await showDemoCredential();
 }
 
