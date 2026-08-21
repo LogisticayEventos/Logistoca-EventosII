@@ -39,6 +39,7 @@ const CREDENTIAL_CACHE_KEY = "logisticaEventosCarnetsV1";
 const RECRUITER_CACHE_KEY = "logisticaEventosReclutadorV1";
 const RECRUITER_NAME_PARAM = "reclutador";
 const RECRUITER_WHATSAPP_PARAM = "contacto";
+const RECRUITER_ACCESS_PARAM = "acceso";
 
 const DEFAULT_CONTENT = {
   brandName: "LOGÍSTICA & EVENTOS",
@@ -121,6 +122,8 @@ let credentialLogoPromise = null;
 
 let questions = clone(DEFAULT_QUESTIONS);
 let content = clone(DEFAULT_CONTENT);
+let advisorProfiles = ADVISORS.map((name,index)=>normalizeAdvisorProfile({id:`advisor-${index+1}`,name,whatsapp:"",active:true},index));
+let recruiterInviteCodes = [];
 let currentStep = 1;
 let isSubmitting = false;
 let registrationId = "";
@@ -129,11 +132,13 @@ let toastTimer = 0;
 let db = null;
 let auth = null;
 let firebaseReady = false;
+let configurationLoaded = false;
 let publicUser = null;
 let questionUnsubscribe = null;
 let recordsUnsubscribe = null;
 let records = [];
 let filteredRecords = [];
+let filteredPaymentRecords = [];
 let demoAdmin = false;
 let linkedRecordOpened = false;
 let confirmResolver = null;
@@ -146,8 +151,11 @@ let qrScannerLastCheck = 0;
 let qrDetector = null;
 let scannerRecordId = "";
 let recruiterContext = null;
+let pendingRecruiterContext = null;
 let currentDeliveryContact = null;
 let recruiterSetupMode = false;
+let activeSettingsTab = "team";
+let latestInvitationCodeReveal = "";
 let photoState = { image: null, zoom: 1, panX: 0, panY: 0, dragging: false, pointerX: 0, pointerY: 0 };
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -157,19 +165,66 @@ function normalizeText(value) { return String(value || "").normalize("NFD").repl
 function safeImage(value) { return /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(value || "") ? value : ""; }
 function timestampToDate(value) { if (!value) return null; if (typeof value.toDate === "function") return value.toDate(); const date = value instanceof Date ? value : new Date(value); return Number.isNaN(date.getTime()) ? null : date; }
 function formatDate(value, withTime = false) { const date = timestampToDate(value); if (!date) return "Pendiente"; return new Intl.DateTimeFormat("es-CO", withTime ? { timeZone:"America/Bogota", dateStyle:"medium", timeStyle:"short" } : { timeZone:"America/Bogota", dateStyle:"medium" }).format(date); }
+function createLocalId(prefix="item") { try{return `${prefix}-${crypto.randomUUID()}`;}catch{return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2,9)}`;} }
+
+function normalizeAdvisorProfile(value={},index=0) {
+  const name=titleCase(String(value.name||"").replace(/[^\p{L}\s'.-]/gu,"").replace(/\s+/g," ").trim().slice(0,90));
+  const whatsapp=String(value.whatsapp||"").replace(/\D/g,"").slice(0,10);
+  const fallbackId=`advisor-${index+1}`;const id=String(value.id||fallbackId).replace(/[^a-zA-Z0-9_-]/g,"-").slice(0,90)||fallbackId;
+  return {id,name,whatsapp:/^3\d{9}$/.test(whatsapp)?whatsapp:"",active:value.active!==false};
+}
+
+function normalizeAdvisorProfiles(values,fallbackNames=ADVISORS) {
+  const source=Array.isArray(values)&&values.length?values:fallbackNames.map((name,index)=>({id:`advisor-${index+1}`,name,whatsapp:"",active:true}));
+  const seen=new Set();const clean=[];
+  source.forEach((value,index)=>{const advisor=normalizeAdvisorProfile(typeof value==="string"?{name:value}:value,index);const key=normalizeText(advisor.name);if(!advisor.name||seen.has(key))return;seen.add(key);clean.push(advisor);});
+  return clean.length?clean:normalizeAdvisorProfiles([],ADVISORS);
+}
+
+function normalizeInvitationCodes(values) {
+  if(!Array.isArray(values))return[];const seen=new Set();
+  return values.map((value,index)=>{const hash=String(value?.hash||"").toLowerCase();const id=String(value?.id||`invite-${index+1}`).replace(/[^a-zA-Z0-9_-]/g,"-").slice(0,90);const label=String(value?.label||"Invitación sin nombre").trim().slice(0,70);const lastFour=String(value?.lastFour||"").replace(/[^A-Z0-9]/gi,"").toUpperCase().slice(-4);return{id,label,hash,lastFour,active:value?.active!==false,createdAt:Number(value?.createdAt)||Date.now()};}).filter((value)=>/^[a-f0-9]{64}$/.test(value.hash)&&!seen.has(value.hash)&&(seen.add(value.hash)||true));
+}
+
+function normalizeInvitationCode(value) { return String(value||"").trim().toUpperCase().replace(/\s+/g,"-").replace(/[^A-Z0-9-]/g,"").replace(/-+/g,"-").replace(/^-|-$/g,"").slice(0,40); }
+
+async function hashInvitationCode(value) {
+  const code=normalizeInvitationCode(value);if(!code||!globalThis.crypto?.subtle)throw new Error("Tu navegador no permite validar códigos de forma segura.");
+  const digest=await globalThis.crypto.subtle.digest("SHA-256",new TextEncoder().encode(code));return[...new Uint8Array(digest)].map((byte)=>byte.toString(16).padStart(2,"0")).join("");
+}
+
+function generateInvitationCodeValue() {
+  const alphabet="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";const bytes=new Uint8Array(12);globalThis.crypto.getRandomValues(bytes);const groups=[];
+  for(let group=0;group<3;group+=1)groups.push([...bytes.slice(group*4,group*4+4)].map((byte)=>alphabet[byte%alphabet.length]).join(""));
+  return `REC-${groups.join("-")}`;
+}
+
+function activeAdvisorNames() { return advisorProfiles.filter((advisor)=>advisor.active).map((advisor)=>advisor.name).sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"})); }
+
+function syncAdvisorQuestionOptions() {
+  const names=activeAdvisorNames();const advisorQuestion=questions.find((question)=>question.id==="advisor");if(advisorQuestion)advisorQuestion.options=names.length?names:[ADVISORS[0]];
+}
+
+function advisorContactByName(name) {
+  const profile=advisorProfiles.find((advisor)=>advisor.active&&normalizeText(advisor.name)===normalizeText(name));if(!profile?.whatsapp)return null;
+  const parts=profile.name.split(/\s+/);return{firstName:parts[0],lastName:parts.slice(1).join(" "),name:profile.name,whatsapp:profile.whatsapp};
+}
+
+function deliveryContactForCurrentForm() { return recruiterContext||advisorContactByName(answer("advisor")); }
 
 function normalizeRecruiterContext(value = {}) {
   const firstName=titleCase(String(value.firstName||"").replace(/[^\p{L}\s'-]/gu,"").replace(/\s+/g," ").slice(0,45));
   const lastName=titleCase(String(value.lastName||"").replace(/[^\p{L}\s'-]/gu,"").replace(/\s+/g," ").slice(0,45));
   const whatsapp=String(value.whatsapp||"").replace(/\D/g,"");
   if(!firstName||!lastName||!/^[3]\d{9}$/.test(whatsapp))return null;
-  return {firstName,lastName,name:`${firstName} ${lastName}`,whatsapp};
+  const accessHash=/^[a-f0-9]{64}$/.test(String(value.accessHash||"").toLowerCase())?String(value.accessHash).toLowerCase():"";
+  return {firstName,lastName,name:`${firstName} ${lastName}`,whatsapp,...(accessHash?{accessHash}:{})};
 }
 
 function recruiterContextFromUrl() {
   const name=String(PAGE_PARAMS.get(RECRUITER_NAME_PARAM)||"").trim().split(/\s+/);
   if(name.length<2)return null;
-  return normalizeRecruiterContext({firstName:name.shift(),lastName:name.join(" "),whatsapp:PAGE_PARAMS.get(RECRUITER_WHATSAPP_PARAM)||""});
+  return normalizeRecruiterContext({firstName:name.shift(),lastName:name.join(" "),whatsapp:PAGE_PARAMS.get(RECRUITER_WHATSAPP_PARAM)||"",accessHash:PAGE_PARAMS.get(RECRUITER_ACCESS_PARAM)||""});
 }
 
 function readStoredRecruiterContext() {
@@ -189,14 +244,14 @@ function normalizedWhatsappTarget(value) {
 function personalizedRecruiterUrl(context=recruiterContext) {
   if(!context)return location.href;
   const url=new URL(location.href);url.search="";url.hash="";
-  url.searchParams.set(RECRUITER_NAME_PARAM,context.name);url.searchParams.set(RECRUITER_WHATSAPP_PARAM,context.whatsapp);
+  url.searchParams.set(RECRUITER_NAME_PARAM,context.name);url.searchParams.set(RECRUITER_WHATSAPP_PARAM,context.whatsapp);if(context.accessHash)url.searchParams.set(RECRUITER_ACCESS_PARAM,context.accessHash);
   return url.toString();
 }
 
 function recruiterContactFromRecord(record={}) {
   let answers={};try{answers=JSON.parse(record.answersJson||"{}");}catch{}
   const name=record.recruiterName||answers.recruiterName;const whatsapp=record.recruiterWhatsapp||answers.recruiterWhatsapp;
-  if(name&&whatsapp){const parts=String(name).trim().split(/\s+/);return normalizeRecruiterContext({firstName:parts.shift(),lastName:parts.join(" "),whatsapp});}
+  if(name&&/^3\d{9}$/.test(String(whatsapp).replace(/\D/g,""))){const cleanName=titleCase(name);const parts=cleanName.split(/\s+/);return{firstName:parts[0],lastName:parts.slice(1).join(" "),name:cleanName,whatsapp:String(whatsapp).replace(/\D/g,"")};}
   return null;
 }
 
@@ -309,6 +364,19 @@ function renderRecruiterContextBanner() {
   const actions=banner.querySelector(".recruiter-context-actions");if(actions)actions.hidden=!recruiterSetupMode;
 }
 
+function refreshRecruiterAccess() {
+  const candidate=pendingRecruiterContext||recruiterContext;if(!candidate)return;
+  const authorized=Boolean(candidate.accessHash&&recruiterInviteCodes.some((code)=>code.active&&code.hash===candidate.accessHash));
+  if(authorized){
+    recruiterContext=candidate;pendingRecruiterContext=null;currentDeliveryContact=candidate;
+    const saved=readStoredRecruiterContext();recruiterSetupMode=Boolean(saved?.accessHash===candidate.accessHash&&saved.name===candidate.name&&saved.whatsapp===candidate.whatsapp);
+  }else{
+    const wasVisible=Boolean(recruiterContext);recruiterContext=null;pendingRecruiterContext=null;if(currentDeliveryContact===candidate)currentDeliveryContact=null;recruiterSetupMode=false;
+    if(wasVisible)showToast("El acceso de este reclutador fue desactivado.");
+  }
+  renderAllQuestions(true);renderRecruiterContextBanner();updateWhatsappLink();
+}
+
 async function copyText(value) {
   if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);return;}
   const area=document.createElement("textarea");area.value=value;area.setAttribute("readonly","");area.style.position="fixed";area.style.opacity="0";document.body.append(area);area.select();document.execCommand("copy");area.remove();
@@ -337,17 +405,24 @@ function openRecruiterSetup() {
   closeModal("accessTypeModal");const saved=recruiterContext||readStoredRecruiterContext();
   $("recruiterForm").reset();$("recruiterFormError").textContent="";
   if(saved){$("recruiterFirstName").value=saved.firstName;$("recruiterLastName").value=saved.lastName;$("recruiterWhatsapp").value=saved.whatsapp;}
+  if(configurationLoaded&&!recruiterInviteCodes.some((code)=>code.active))$("recruiterFormError").textContent="No hay códigos activos. Solicita al administrador que cree uno.";
   openModal("recruiterModal");setTimeout(()=>$("recruiterFirstName").focus(),100);
 }
 
-function saveRecruiterSetup(event) {
+async function saveRecruiterSetup(event) {
   event.preventDefault();const editor=$("recruiterForm");$("recruiterFormError").textContent="";
   if(!editor.reportValidity())return;
-  const next=normalizeRecruiterContext({firstName:$("recruiterFirstName").value,lastName:$("recruiterLastName").value,whatsapp:$("recruiterWhatsapp").value});
-  if(!next){$("recruiterFormError").textContent="Revisa el nombre, apellido y WhatsApp. El número debe comenzar por 3 y tener 10 dígitos.";return;}
-  recruiterContext=next;currentDeliveryContact=next;recruiterSetupMode=true;storeRecruiterContext(next);
+  if(!configurationLoaded){$("recruiterFormError").textContent="Espera unos segundos mientras cargamos los accesos autorizados.";return;}
+  const code=normalizeInvitationCode($("recruiterInvitationCode").value);if(code.length<4){$("recruiterFormError").textContent="El código debe tener al menos 4 caracteres.";return;}
+  const button=$("recruiterSubmitButton");button.disabled=true;button.textContent="Validando código…";
+  let accessHash="";try{accessHash=await hashInvitationCode(code);}catch(error){$("recruiterFormError").textContent=error.message;button.disabled=false;button.textContent="Validar y crear mi enlace";return;}
+  if(!recruiterInviteCodes.some((invite)=>invite.active&&invite.hash===accessHash)){$("recruiterFormError").textContent="El código no existe, está desactivado o fue reemplazado.";button.disabled=false;button.textContent="Validar y crear mi enlace";return;}
+  const next=normalizeRecruiterContext({firstName:$("recruiterFirstName").value,lastName:$("recruiterLastName").value,whatsapp:$("recruiterWhatsapp").value,accessHash});
+  if(!next){$("recruiterFormError").textContent="Revisa el nombre, apellido y WhatsApp. El número debe comenzar por 3 y tener 10 dígitos.";button.disabled=false;button.textContent="Validar y crear mi enlace";return;}
+  recruiterContext=next;pendingRecruiterContext=null;currentDeliveryContact=next;recruiterSetupMode=true;storeRecruiterContext(next);
   const url=new URL(personalizedRecruiterUrl(next));history.replaceState({},"",`${url.pathname}${url.search}${url.hash}`);
   renderAllQuestions(true);renderRecruiterContextBanner();updateWhatsappLink();closeModal("recruiterModal");showToast("Enlace de reclutador listo para compartir.");
+  button.disabled=false;button.textContent="Validar y crear mi enlace";
   $("recruiterContextBanner").scrollIntoView({behavior:"smooth",block:"center"});
 }
 
@@ -739,7 +814,7 @@ function updateWhatsappLink() {
 }
 
 async function initializeBackend() {
-  if (IS_DEMO) { firebaseReady=true; publicUser={uid:"demo-public",isAnonymous:true}; records=demoRecords(); hideConnection(); return; }
+  if (IS_DEMO) { firebaseReady=true;configurationLoaded=true;publicUser={uid:"demo-public",isAnonymous:true};records=demoRecords();hideConnection();return; }
   if (!window.firebase) { showConnection("No fue posible cargar la conexión. Revisa internet e inténtalo nuevamente.",true); return; }
   try {
     if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
@@ -759,16 +834,21 @@ async function initializeBackend() {
 function subscribeQuestionConfig() {
   questionUnsubscribe?.();
   questionUnsubscribe=db.collection("configuracion").doc("formulario_inscripcion").onSnapshot((snapshot)=>{
-    if (!snapshot.exists)return;
+    if (!snapshot.exists){configurationLoaded=true;return;}
     const data=snapshot.data();
-    if (Array.isArray(data.questions)&&data.questions.length) { questions=data.questions.map(normalizeQuestion);renderAllQuestions(true); }
-    content=normalizeContent(data.content||DEFAULT_CONTENT);applyContent();renderSavedCredentialPanel();
+    if (Array.isArray(data.questions)&&data.questions.length)questions=data.questions.map(normalizeQuestion);
+    const advisorQuestion=questions.find((question)=>question.id==="advisor");advisorProfiles=normalizeAdvisorProfiles(data.advisors,advisorQuestion?.options?.length?advisorQuestion.options:ADVISORS);recruiterInviteCodes=normalizeInvitationCodes(data.recruiterInviteCodes);syncAdvisorQuestionOptions();
+    content=normalizeContent(data.content||DEFAULT_CONTENT);configurationLoaded=true;
+    if(pendingRecruiterContext||recruiterContext)refreshRecruiterAccess();else renderAllQuestions(true);
+    applyContent();renderSavedCredentialPanel();renderTeamConfiguration();
   },(error)=>console.warn("No se pudo cargar la configuración",error));
 }
 
 async function saveRegistration() {
   const values=collectAnswers();
-  if(recruiterContext){values.advisor=recruiterContext.name;values.recruiterName=recruiterContext.name;values.recruiterWhatsapp=recruiterContext.whatsapp;}
+  const delivery=currentDeliveryContact||deliveryContactForCurrentForm();
+  if(recruiterContext)values.advisor=recruiterContext.name;
+  if(delivery){values.recruiterName=delivery.name;values.recruiterWhatsapp=delivery.whatsapp;}
   values.meetingConsent=$("meetingConsent").checked;values.privacyConsent=$("privacyConsent").checked;
   const payload={
     firstName:titleCase(values.firstName),lastName:titleCase(values.lastName),age:Number(values.age),gender:String(values.gender),advisor:String(values.advisor),team:TEAM_NAME,
@@ -799,7 +879,7 @@ async function showDemoCredential() {
 
 async function submitRegistration(event) {
   event.preventDefault(); if(isSubmitting||!validateStep(4))return;
-  currentDeliveryContact=recruiterContext;
+  currentDeliveryContact=deliveryContactForCurrentForm();
   isSubmitting=true;$("submitButton").disabled=true;$("submitButton").classList.add("is-loading");$("submitStatus").className="submit-status is-info";$("submitStatus").textContent="Guardando la inscripción y creando el carné…";
   let saved=true;
   try { registrationId=await saveRegistration(); }
@@ -863,12 +943,14 @@ async function logoutAdmin() {
 
 async function ensureQuestionConfig() {
   const ref=db.collection("configuracion").doc("formulario_inscripcion");const snapshot=await ref.get();
-  if(!snapshot.exists)await ref.set({questions:questions.map(questionForStorage),content:normalizeContent(content),updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:ADMIN_EMAIL});
+  if(!snapshot.exists){advisorProfiles=normalizeAdvisorProfiles(advisorProfiles);recruiterInviteCodes=[];syncAdvisorQuestionOptions();await ref.set({questions:questions.map(questionForStorage),content:normalizeContent(content),advisors:advisorProfiles,recruiterInviteCodes,updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:ADMIN_EMAIL});}
   else {
     const data=snapshot.data();if(Array.isArray(data.questions))questions=data.questions.map(normalizeQuestion);content=normalizeContent(data.content||DEFAULT_CONTENT);
-    if(!data.content)await ref.set({content,updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:ADMIN_EMAIL},{merge:true});
+    const advisorQuestion=questions.find((question)=>question.id==="advisor");advisorProfiles=normalizeAdvisorProfiles(data.advisors,advisorQuestion?.options?.length?advisorQuestion.options:ADVISORS);recruiterInviteCodes=normalizeInvitationCodes(data.recruiterInviteCodes);syncAdvisorQuestionOptions();
+    const missing={};if(!data.content)missing.content=content;if(!Array.isArray(data.advisors))missing.advisors=advisorProfiles;if(!Array.isArray(data.recruiterInviteCodes))missing.recruiterInviteCodes=recruiterInviteCodes;
+    if(Object.keys(missing).length)await ref.set({...missing,questions:questions.map(questionForStorage),updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:ADMIN_EMAIL},{merge:true});
   }
-  renderAllQuestions(true);applyContent();
+  configurationLoaded=true;renderAllQuestions(true);applyContent();renderTeamConfiguration();
 }
 
 function questionForStorage(question) {
@@ -898,7 +980,7 @@ async function openLinkedRecord() {
 }
 
 function renderAdminData() {
-  renderDashboard();renderAdvisorFilter();renderRecords();
+  renderDashboard();renderAdvisorFilter();renderRecords();renderPayments();
   const purchases=records.filter((record)=>record.registrationSheetPurchased===true).length;
   $("sheetPurchaseCount").textContent=`${purchases} ${purchases===1?"compra":"compras"}`;
   if(scannerRecordId){const record=records.find((item)=>item.id===scannerRecordId);if(record)renderScannerRecord(record);}
@@ -1052,7 +1134,6 @@ function renderDashboard() {
   const entries=Object.entries(counts).sort((a,b)=>b[1]-a[1]);const max=Math.max(1,...entries.map(([,count])=>count));
   $("advisorBreakdown").innerHTML=entries.length?entries.map(([name,count])=>`<div class="advisor-row"><span title="${escapeHTML(name)}">${escapeHTML(name)}</span><div class="advisor-bar"><span style="width:${Math.max(4,(count/max)*100)}%"></span></div><strong>${count}</strong></div>`).join(""):`<div class="empty-state"><p>Aún no hay registros.</p></div>`;
   $("recentRecords").innerHTML=records.slice(0,5).map((record)=>`<button class="recent-item" type="button" data-view-record="${escapeHTML(record.id)}">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor||"Sin asesor")}</small></span><time>${escapeHTML(formatDate(record.createdAt))}</time></button>`).join("")||`<div class="empty-state"><p>Aún no hay registros.</p></div>`;
-  renderDateReport();
 }
 
 function recordPhoto(record,className="") {
@@ -1071,6 +1152,32 @@ function renderRecords() {
   $("recordCountBadge").textContent=`${filteredRecords.length} ${filteredRecords.length===1?"registro":"registros"}`;$("recordsEmpty").hidden=filteredRecords.length>0;
   $("recordsTableBody").innerHTML=filteredRecords.map((record)=>`<tr><td><div class="person-cell">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.document)}</small></span></div></td><td>${escapeHTML(record.age)}</td><td>${escapeHTML(record.gender)}</td><td>${escapeHTML(record.advisor)}</td><td><span class="team-badge">${escapeHTML(record.team||TEAM_NAME)}</span></td><td>${sheetPurchaseBadge(record)}</td><td>${escapeHTML(formatDate(record.createdAt,true))}</td><td><button class="table-action" type="button" data-view-record="${escapeHTML(record.id)}">Ver</button></td></tr>`).join("");
   $("recordsMobile").innerHTML=filteredRecords.map((record)=>`<button class="mobile-record" type="button" data-view-record="${escapeHTML(record.id)}">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor)} · ${record.registrationSheetPurchased===true?"Hoja comprada":"Hoja pendiente"} · ${escapeHTML(formatDate(record.createdAt))}</small></span><span>›</span></button>`).join("");
+}
+
+function renderPaymentAdvisorFilter() {
+  if(!$("paymentAdvisorFilter"))return;const current=$("paymentAdvisorFilter").value;const advisors=[...new Set(records.map((record)=>record.advisor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
+  $("paymentAdvisorFilter").innerHTML=`<option value="">Todos los asesores</option>${advisors.map((name)=>`<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join("")}`;if(advisors.includes(current))$("paymentAdvisorFilter").value=current;
+}
+
+function paymentStatusBadge(record) { return record.registrationSheetPurchased===true?'<span class="payment-status is-paid">Pagada</span>':'<span class="payment-status is-pending">Pendiente</span>'; }
+
+function renderPayments() {
+  if(!$("paymentTableBody"))return;renderDateReport();renderPaymentAdvisorFilter();
+  const paid=records.filter((record)=>record.registrationSheetPurchased===true).length;const pending=records.length-paid;const rate=records.length?Math.round((paid/records.length)*100):0;
+  setText("paymentStatTotal",records.length);setText("paymentStatPaid",paid);setText("paymentStatPending",pending);setText("paymentStatRate",`${rate}%`);setText("paymentSectionBadge",`${paid} ${paid===1?"pago":"pagos"}`);
+
+  const advisorTotals={};records.forEach((record)=>{const name=record.advisor||"Sin asesor";advisorTotals[name]||={total:0,paid:0};advisorTotals[name].total+=1;if(record.registrationSheetPurchased===true)advisorTotals[name].paid+=1;});
+  const advisorEntries=Object.entries(advisorTotals).sort((a,b)=>b[1].paid-a[1].paid||b[1].total-a[1].total||a[0].localeCompare(b[0],"es",{sensitivity:"base"}));setText("paymentAdvisorCount",`${advisorEntries.length} ${advisorEntries.length===1?"asesor":"asesores"}`);
+  $("paymentAdvisorSummary").innerHTML=advisorEntries.length?advisorEntries.map(([name,summary])=>{const percentage=summary.total?Math.round((summary.paid/summary.total)*100):0;return`<article class="payment-advisor-row"><div><strong title="${escapeHTML(name)}">${escapeHTML(name)}</strong><span>${summary.paid} de ${summary.total} pagaron</span></div><div class="payment-progress" aria-label="${percentage}% pagado"><span style="width:${percentage}%"></span></div><small>${percentage}%</small></article>`;}).join(""):`<div class="payment-empty-compact"><span>$</span><p>Aún no hay registros para resumir.</p></div>`;
+  renderPaymentTable();
+}
+
+function renderPaymentTable() {
+  const search=normalizeText($("paymentSearch").value);const advisor=$("paymentAdvisorFilter").value;const status=$("paymentStatusFilter").value;
+  filteredPaymentRecords=records.filter((record)=>{const haystack=normalizeText(`${record.firstName} ${record.lastName} ${record.document} ${record.advisor}`);const paidRecord=record.registrationSheetPurchased===true;return(!search||haystack.includes(search))&&(!advisor||record.advisor===advisor)&&(!status||(status==="paid"?paidRecord:!paidRecord));});
+  setText("paymentRecordCount",`${filteredPaymentRecords.length} ${filteredPaymentRecords.length===1?"persona":"personas"}`);$("paymentEmpty").hidden=filteredPaymentRecords.length>0;
+  $("paymentTableBody").innerHTML=filteredPaymentRecords.map((record)=>{const purchased=record.registrationSheetPurchased===true;return`<tr><td><strong>${escapeHTML(record.firstName||"—")}</strong></td><td>${escapeHTML(record.lastName||"—")}</td><td>${escapeHTML(record.document||"—")}</td><td>${escapeHTML(record.advisor||"Sin asesor")}</td><td>${paymentStatusBadge(record)}</td><td>${purchased?escapeHTML(formatDate(record.registrationSheetPurchasedAt,true)):"—"}</td><td><div class="payment-row-actions">${purchased?"":`<button class="table-action payment-confirm-action" type="button" data-mark-sheet="${escapeHTML(record.id)}">Confirmar pago</button>`}<button class="table-action" type="button" data-view-record="${escapeHTML(record.id)}">Ver</button></div></td></tr>`;}).join("");
+  $("paymentRecordsMobile").innerHTML=filteredPaymentRecords.map((record)=>{const purchased=record.registrationSheetPurchased===true;return`<article class="payment-mobile-record"><div class="payment-mobile-heading"><div><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>Documento ${escapeHTML(record.document||"—")}</small></div>${paymentStatusBadge(record)}</div><dl><div><dt>Asesor</dt><dd>${escapeHTML(record.advisor||"Sin asesor")}</dd></div><div><dt>Fecha de pago</dt><dd>${purchased?escapeHTML(formatDate(record.registrationSheetPurchasedAt,true)):"Sin confirmar"}</dd></div></dl><div class="payment-mobile-actions">${purchased?"":`<button class="button button-primary" type="button" data-mark-sheet="${escapeHTML(record.id)}">Confirmar pago</button>`}<button class="button button-secondary" type="button" data-view-record="${escapeHTML(record.id)}">Ver registro</button></div></article>`;}).join("");
 }
 
 function recordAnswerItems(record) {
@@ -1112,11 +1219,87 @@ function confirmDialog(message,{title="Confirmar acción",acceptText="Confirmar"
 
 function resolveConfirm(value) { closeModal("confirmModal");confirmResolver?.(value);confirmResolver=null; }
 
+function renderTeamConfiguration() {
+  if(!$("advisorManagerList")||!$("invitationCodeList"))return;
+  const activeAdvisors=advisorProfiles.filter((advisor)=>advisor.active).length;const activeCodes=recruiterInviteCodes.filter((code)=>code.active).length;
+  const orderedAdvisors=[...advisorProfiles].sort((a,b)=>a.name.localeCompare(b.name,"es",{sensitivity:"base"}));const orderedCodes=[...recruiterInviteCodes].sort((a,b)=>b.createdAt-a.createdAt);
+  setText("advisorManagerCount",`${activeAdvisors} ${activeAdvisors===1?"asesor activo":"asesores activos"}`);setText("invitationCodeCount",`${activeCodes} ${activeCodes===1?"código activo":"códigos activos"}`);
+  $("advisorManagerList").innerHTML=orderedAdvisors.map((advisor)=>{const initials=advisor.name.split(/\s+/).slice(0,2).map((part)=>part.charAt(0)).join("").toLocaleUpperCase("es");return`<article class="manager-row${advisor.active?"":" is-inactive"}"><span class="manager-avatar" aria-hidden="true">${escapeHTML(initials)}</span><div class="manager-info"><div><strong>${escapeHTML(advisor.name)}</strong><span class="mini-status ${advisor.active?"is-active":""}">${advisor.active?"Activo":"Inactivo"}</span></div><small class="${advisor.whatsapp?"":"is-warning"}">${advisor.whatsapp?`WhatsApp ${escapeHTML(formatWhatsapp(advisor.whatsapp))}`:"WhatsApp pendiente"}</small></div><div class="manager-actions"><button type="button" data-edit-advisor="${escapeHTML(advisor.id)}" title="Editar asesor">Editar</button><button class="delete" type="button" data-delete-advisor="${escapeHTML(advisor.id)}" title="Eliminar asesor">Eliminar</button></div></article>`;}).join("")||`<div class="manager-empty"><span>＋</span><strong>No hay asesores</strong><p>Agrega el primer perfil para habilitar el formulario.</p></div>`;
+  $("invitationCodeList").innerHTML=orderedCodes.map((code)=>`<article class="manager-row code-row${code.active?"":" is-inactive"}"><span class="manager-avatar code-avatar" aria-hidden="true">#</span><div class="manager-info"><div><strong>${escapeHTML(code.label)}</strong><span class="mini-status ${code.active?"is-active":""}">${code.active?"Activo":"Inactivo"}</span></div><small>Código protegido · termina en ${escapeHTML(code.lastFour||"••••")}</small></div><div class="manager-actions"><button type="button" data-edit-invitation="${escapeHTML(code.id)}" title="Editar código">Editar</button><button class="delete" type="button" data-delete-invitation="${escapeHTML(code.id)}" title="Eliminar código">Eliminar</button></div></article>`).join("")||`<div class="manager-empty"><span>#</span><strong>Aún no hay códigos</strong><p>Crea uno para autorizar el acceso de reclutadores.</p></div>`;
+  $("invitationCodeReveal").hidden=!latestInvitationCodeReveal;if(latestInvitationCodeReveal)setText("revealedInvitationCode",latestInvitationCodeReveal);
+}
+
+async function persistTeamConfiguration(message="Configuración guardada.") {
+  syncAdvisorQuestionOptions();renderAllQuestions(true);renderTeamConfiguration();
+  if(IS_DEMO){showToast(message);return;}
+  setText("teamConfigurationStatus","Guardando…");setLoading(true,"Guardando equipo y accesos…");
+  try{
+    await db.collection("configuracion").doc("formulario_inscripcion").set({advisors:advisorProfiles.map((advisor)=>({...advisor})),recruiterInviteCodes:recruiterInviteCodes.map((code)=>({...code})),questions:questions.map(questionForStorage),updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:auth.currentUser.email},{merge:true});
+    setText("teamConfigurationStatus","Configuración sincronizada");showToast(message);
+  }catch(error){console.error(error);setText("teamConfigurationStatus","No se pudo sincronizar");showToast("No se pudieron guardar los cambios.");}
+  finally{setLoading(false);}
+}
+
+function openAdvisorEditor(id="") {
+  const advisor=advisorProfiles.find((item)=>item.id===id);$("advisorForm").reset();$("advisorFormError").textContent="";$("advisorEditId").value=advisor?.id||"";$("advisorModalTitle").textContent=advisor?"Editar asesor":"Agregar asesor";$("advisorName").value=advisor?.name||"";$("advisorWhatsapp").value=advisor?.whatsapp||"";$("advisorActive").checked=advisor?advisor.active:true;openModal("advisorModal");setTimeout(()=>$("advisorName").focus(),100);
+}
+
+async function saveAdvisor(event) {
+  event.preventDefault();const formNode=$("advisorForm");$("advisorFormError").textContent="";if(!formNode.reportValidity())return;
+  const id=$("advisorEditId").value;const existing=advisorProfiles.find((advisor)=>advisor.id===id);const next=normalizeAdvisorProfile({id:existing?.id||createLocalId("advisor"),name:$("advisorName").value,whatsapp:$("advisorWhatsapp").value,active:$("advisorActive").checked});
+  if(!next.name||!next.whatsapp){$("advisorFormError").textContent="Escribe un nombre y un WhatsApp colombiano válido de 10 dígitos.";return;}
+  if(advisorProfiles.some((advisor)=>advisor.id!==id&&normalizeText(advisor.name)===normalizeText(next.name))){$("advisorFormError").textContent="Ya existe un asesor con ese nombre.";return;}
+  if(!next.active&&existing?.active&&advisorProfiles.filter((advisor)=>advisor.active).length===1){$("advisorFormError").textContent="Debe permanecer al menos un asesor activo.";return;}
+  if(existing)advisorProfiles[advisorProfiles.findIndex((advisor)=>advisor.id===id)]=next;else advisorProfiles.push(next);
+  closeModal("advisorModal");await persistTeamConfiguration(existing?"Asesor actualizado.":"Asesor agregado.");
+}
+
+async function deleteAdvisor(id) {
+  const advisor=advisorProfiles.find((item)=>item.id===id);if(!advisor)return;
+  if(advisor.active&&advisorProfiles.filter((item)=>item.active).length===1){showToast("Debe permanecer al menos un asesor activo.");return;}
+  if(!await confirmDialog(`¿Eliminar a ${advisor.name} del directorio? Los registros anteriores conservarán su nombre.`,{title:"Eliminar asesor",acceptText:"Eliminar",danger:true}))return;
+  advisorProfiles=advisorProfiles.filter((item)=>item.id!==id);await persistTeamConfiguration("Asesor eliminado.");
+}
+
+function openInvitationCodeEditor(id="") {
+  const invite=recruiterInviteCodes.find((item)=>item.id===id);$("invitationCodeForm").reset();$("invitationCodeFormError").textContent="";$("invitationCodeEditId").value=invite?.id||"";$("invitationCodeModalTitle").textContent=invite?"Editar código de invitación":"Crear código de invitación";$("invitationCodeLabel").value=invite?.label||"";$("invitationCodeValue").value="";$("invitationCodeActive").checked=invite?invite.active:true;$("invitationCodeHelp").textContent=invite?"Déjalo vacío para conservar el código actual o escribe uno nuevo de mínimo 4 caracteres para reemplazarlo.":"Usa mínimo 4 caracteres. Puedes escribir uno o generarlo automáticamente.";openModal("invitationCodeModal");setTimeout(()=>$("invitationCodeLabel").focus(),100);
+}
+
+function fillGeneratedInvitationCode() { const code=generateInvitationCodeValue();$("invitationCodeValue").value=code;$("invitationCodeValue").focus();$("invitationCodeValue").select(); }
+
+async function saveInvitationCode(event) {
+  event.preventDefault();const formNode=$("invitationCodeForm");$("invitationCodeFormError").textContent="";if(!formNode.reportValidity())return;
+  const id=$("invitationCodeEditId").value;const existing=recruiterInviteCodes.find((invite)=>invite.id===id);const label=$("invitationCodeLabel").value.trim();const rawCode=normalizeInvitationCode($("invitationCodeValue").value);
+  if(!existing&&!rawCode){$("invitationCodeFormError").textContent="Escribe o genera un código.";return;}if(rawCode&&rawCode.length<4){$("invitationCodeFormError").textContent="El código debe tener al menos 4 caracteres.";return;}
+  let hash=existing?.hash||"";let lastFour=existing?.lastFour||"";
+  try{if(rawCode){hash=await hashInvitationCode(rawCode);lastFour=rawCode.replace(/-/g,"").slice(-4);}}catch(error){$("invitationCodeFormError").textContent=error.message;return;}
+  if(recruiterInviteCodes.some((invite)=>invite.id!==id&&invite.hash===hash)){$("invitationCodeFormError").textContent="Ese código ya está registrado.";return;}
+  const next={id:existing?.id||createLocalId("invite"),label:label.slice(0,70),hash,lastFour,active:$("invitationCodeActive").checked,createdAt:existing?.createdAt||Date.now()};
+  if(existing)recruiterInviteCodes[recruiterInviteCodes.findIndex((invite)=>invite.id===id)]=next;else recruiterInviteCodes.push(next);
+  latestInvitationCodeReveal=rawCode||"";closeModal("invitationCodeModal");await persistTeamConfiguration(existing?"Código actualizado.":"Código creado.");
+  if(recruiterContext)refreshRecruiterAccess();
+}
+
+async function deleteInvitationCode(id) {
+  const invite=recruiterInviteCodes.find((item)=>item.id===id);if(!invite)return;
+  if(!await confirmDialog(`¿Eliminar el código “${invite.label}”? Los reclutadores que lo usaban perderán el acceso al volver a cargar la página.`,{title:"Eliminar código",acceptText:"Eliminar",danger:true}))return;
+  recruiterInviteCodes=recruiterInviteCodes.filter((item)=>item.id!==id);latestInvitationCodeReveal="";await persistTeamConfiguration("Código eliminado.");if(recruiterContext)refreshRecruiterAccess();
+}
+
+async function copyRevealedInvitationCode() { if(!latestInvitationCodeReveal)return;try{await copyText(latestInvitationCodeReveal);showToast("Código copiado.");}catch{showToast("No fue posible copiar el código.");} }
+
+function showSettingsTab(name) {
+  activeSettingsTab=["team","content","questions"].includes(name)?name:"team";
+  document.querySelectorAll("[data-settings-tab]").forEach((button)=>button.classList.toggle("is-active",button.dataset.settingsTab===activeSettingsTab));
+  document.querySelectorAll("[data-settings-panel]").forEach((panel)=>{const active=panel.dataset.settingsPanel===activeSettingsTab;panel.hidden=!active;panel.classList.toggle("is-active",active);});
+  if(activeSettingsTab==="team")renderTeamConfiguration();if(activeSettingsTab==="content")loadContentEditor();if(activeSettingsTab==="questions")renderQuestionEditor();
+}
+
 function showAdminTab(name) {
   if(name!=="scanner")stopQrScanner();
   document.querySelectorAll("[data-admin-tab]").forEach((button)=>button.classList.toggle("is-active",button.dataset.adminTab===name));
   document.querySelectorAll("[data-admin-panel]").forEach((panel)=>{const active=panel.dataset.adminPanel===name;panel.hidden=!active;panel.classList.toggle("is-active",active);});
-  if(name==="records")renderRecords();if(name==="content")loadContentEditor();if(name==="questions")renderQuestionEditor();
+  if(name==="records")renderRecords();if(name==="payments")renderPayments();if(name==="settings")showSettingsTab(activeSettingsTab);
 }
 
 function renderQuestionEditor() {
@@ -1130,15 +1313,15 @@ function isLastInStep(question) { const items=stepQuestions(question.step);retur
 function openQuestionEditor(id="") {
   const question=questions.find((item)=>item.id===id);$("questionForm").reset();$("questionFormError").textContent="";$("questionEditId").value=question?.id||"";$("questionModalTitle").textContent=question?"Editar pregunta":"Agregar pregunta";
   $("questionLabel").value=question?.label||"";$("questionType").value=question?.type||"text";$("questionStep").value=String(question?.step||1);$("questionOptions").value=(question?.options||[]).join("\n");$("questionRequired").checked=Boolean(question?.required);
-  $("questionType").disabled=Boolean(question?.locked);$("questionStep").disabled=Boolean(question?.locked);toggleQuestionOptions();openModal("questionModal");setTimeout(()=>$("questionLabel").focus(),100);
+  const advisorOptions=question?.id==="advisor";$("questionType").disabled=Boolean(question?.locked);$("questionStep").disabled=Boolean(question?.locked);$("questionOptions").disabled=advisorOptions;$("questionOptionsHelp").textContent=advisorOptions?"Administra estas opciones desde Configuración → Equipo y accesos.":"";toggleQuestionOptions();openModal("questionModal");setTimeout(()=>$("questionLabel").focus(),100);
 }
 
 function toggleQuestionOptions() { $("questionOptionsField").hidden=!["select","radio","checkbox"].includes($("questionType").value); }
 
 async function saveQuestion(event) {
-  event.preventDefault();const id=$("questionEditId").value;const existing=questions.find((item)=>item.id===id);const type=existing?.locked?existing.type:$("questionType").value;const step=existing?.locked?existing.step:Number($("questionStep").value);const options=$("questionOptions").value.split(/\r?\n/).map((item)=>item.trim()).filter(Boolean);
+  event.preventDefault();const id=$("questionEditId").value;const existing=questions.find((item)=>item.id===id);const type=existing?.locked?existing.type:$("questionType").value;const step=existing?.locked?existing.step:Number($("questionStep").value);const options=existing?.id==="advisor"?activeAdvisorNames():$("questionOptions").value.split(/\r?\n/).map((item)=>item.trim()).filter(Boolean);
   if(!$("questionLabel").value.trim()){$("questionFormError").textContent="Escribe el texto de la pregunta.";return;}
-  if(["select","radio","checkbox"].includes(type)&&options.length<2){$("questionFormError").textContent="Agrega al menos dos opciones.";return;}
+  if(["select","radio","checkbox"].includes(type)&&options.length<2&&existing?.id!=="advisor"){$("questionFormError").textContent="Agrega al menos dos opciones.";return;}
   const updated=normalizeQuestion({...existing,id:existing?.id||`custom-${Date.now()}`,label:$("questionLabel").value.trim(),type,step,options,required:$("questionRequired").checked,locked:Boolean(existing?.locked),minorOnly:Boolean(existing?.minorOnly),full:Boolean(existing?.full)});
   if(existing){const index=questions.findIndex((item)=>item.id===id);questions[index]=updated;}else questions.push(updated);
   closeModal("questionModal");await persistQuestions("Pregunta guardada.");
@@ -1156,7 +1339,7 @@ async function deleteQuestion(id) {
 }
 
 async function persistQuestions(message="Orden actualizado.") {
-  renderQuestionEditor();renderAllQuestions(true);
+  syncAdvisorQuestionOptions();renderQuestionEditor();renderAllQuestions(true);
   if(IS_DEMO){showToast(message);return;}
   setLoading(true,"Guardando preguntas…");
   try{await db.collection("configuracion").doc("formulario_inscripcion").set({questions:questions.map(questionForStorage),updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:auth.currentUser.email},{merge:true});showToast(message);}
@@ -1197,12 +1380,13 @@ function attachEvents() {
   $("restoreSavedCredentialButton").addEventListener("click",restoreSavedCredential);$("forgetSavedCredentialButton").addEventListener("click",forgetSavedCredential);
   $("editPersonalButton").addEventListener("click",()=>showStep(1));$("downloadCredential").addEventListener("click",downloadCredential);$("shareCredential").addEventListener("click",shareCredential);$("sendCredentialToRecruiter").addEventListener("click",sendCredentialToRecruiter);$("restartButton").addEventListener("click",()=>location.reload());
   $("copyRecruiterLinkButton").addEventListener("click",copyRecruiterLink);$("shareRecruiterLinkButton").addEventListener("click",shareRecruiterLink);$("editRecruiterContextButton").addEventListener("click",openRecruiterSetup);
-  $("adminAccessButton").addEventListener("click",openAccessChooser);$("chooseAdminAccess").addEventListener("click",()=>{closeModal("accessTypeModal");openAdminAccess();});$("chooseRecruiterAccess").addEventListener("click",openRecruiterSetup);$("recruiterForm").addEventListener("submit",saveRecruiterSetup);$("recruiterWhatsapp").addEventListener("input",(event)=>{event.target.value=event.target.value.replace(/\D/g,"");});
+  $("adminAccessButton").addEventListener("click",openAccessChooser);$("chooseAdminAccess").addEventListener("click",()=>{closeModal("accessTypeModal");openAdminAccess();});$("chooseRecruiterAccess").addEventListener("click",openRecruiterSetup);$("recruiterForm").addEventListener("submit",saveRecruiterSetup);$("recruiterWhatsapp").addEventListener("input",(event)=>{event.target.value=event.target.value.replace(/\D/g,"");});$("recruiterInvitationCode").addEventListener("input",(event)=>{event.target.value=normalizeInvitationCode(event.target.value);});
   $("adminLoginForm").addEventListener("submit",loginAdmin);$("closeAdminButton").addEventListener("click",closeAdminView);$("logoutAdminButton").addEventListener("click",logoutAdmin);$("refreshAdminButton").addEventListener("click",()=>{if(IS_DEMO)renderAdminData();else loadAdminRecords();showToast("Información actualizada.");});
-  document.querySelectorAll("[data-admin-tab]").forEach((button)=>button.addEventListener("click",()=>showAdminTab(button.dataset.adminTab)));document.querySelectorAll("[data-go-records]").forEach((button)=>button.addEventListener("click",()=>showAdminTab("records")));
+  document.querySelectorAll("[data-admin-tab]").forEach((button)=>button.addEventListener("click",()=>showAdminTab(button.dataset.adminTab)));document.querySelectorAll("[data-settings-tab]").forEach((button)=>button.addEventListener("click",()=>showSettingsTab(button.dataset.settingsTab)));document.querySelectorAll("[data-go-records]").forEach((button)=>button.addEventListener("click",()=>showAdminTab("records")));
   $("startQrScannerButton").addEventListener("click",startQrScanner);$("stopQrScannerButton").addEventListener("click",()=>{stopQrScanner();setScannerStatus("Cámara detenida.");});$("qrScannerImageInput").addEventListener("change",scanQrImage);
   $("scannerManualForm").addEventListener("submit",async(event)=>{event.preventDefault();stopQrScanner();await findScannerRecord($("scannerManualInput").value);});
-  $("recordSearch").addEventListener("input",renderRecords);$("advisorFilter").addEventListener("change",renderRecords);$("dateReportForm").addEventListener("submit",(event)=>{event.preventDefault();renderDateReport();});$("reportTodayButton").addEventListener("click",()=>setDateReportRange(1));$("reportWeekButton").addEventListener("click",()=>setDateReportRange(7));$("contentForm").addEventListener("submit",saveContent);$("restoreDefaultContentButton").addEventListener("click",restoreDefaultContent);$("addQuestionButton").addEventListener("click",()=>openQuestionEditor());$("questionType").addEventListener("change",toggleQuestionOptions);$("questionForm").addEventListener("submit",saveQuestion);
+  $("recordSearch").addEventListener("input",renderRecords);$("advisorFilter").addEventListener("change",renderRecords);$("paymentSearch").addEventListener("input",renderPaymentTable);$("paymentAdvisorFilter").addEventListener("change",renderPaymentTable);$("paymentStatusFilter").addEventListener("change",renderPaymentTable);$("dateReportForm").addEventListener("submit",(event)=>{event.preventDefault();renderDateReport();});$("reportTodayButton").addEventListener("click",()=>setDateReportRange(1));$("reportWeekButton").addEventListener("click",()=>setDateReportRange(7));$("contentForm").addEventListener("submit",saveContent);$("restoreDefaultContentButton").addEventListener("click",restoreDefaultContent);$("addQuestionButton").addEventListener("click",()=>openQuestionEditor());$("questionType").addEventListener("change",toggleQuestionOptions);$("questionForm").addEventListener("submit",saveQuestion);
+  $("addAdvisorButton").addEventListener("click",()=>openAdvisorEditor());$("advisorForm").addEventListener("submit",saveAdvisor);$("advisorWhatsapp").addEventListener("input",(event)=>{event.target.value=event.target.value.replace(/\D/g,"");});$("addInvitationCodeButton").addEventListener("click",()=>openInvitationCodeEditor());$("invitationCodeForm").addEventListener("submit",saveInvitationCode);$("generateInvitationCodeButton").addEventListener("click",fillGeneratedInvitationCode);$("invitationCodeValue").addEventListener("input",(event)=>{event.target.value=normalizeInvitationCode(event.target.value);});$("copyInvitationCodeButton").addEventListener("click",copyRevealedInvitationCode);
   document.addEventListener("click",(event)=>{
     const close=event.target.closest("[data-close-modal]");if(close)closeModal(close.dataset.closeModal);
     const view=event.target.closest("[data-view-record]");if(view)showRecord(view.dataset.viewRecord);
@@ -1211,6 +1395,10 @@ function attachEvents() {
     const edit=event.target.closest("[data-edit-question]");if(edit)openQuestionEditor(edit.dataset.editQuestion);
     const move=event.target.closest("[data-move-question]");if(move)moveQuestion(move.dataset.questionId,move.dataset.moveQuestion);
     const removeQuestion=event.target.closest("[data-delete-question]");if(removeQuestion)deleteQuestion(removeQuestion.dataset.deleteQuestion);
+    const editAdvisor=event.target.closest("[data-edit-advisor]");if(editAdvisor)openAdvisorEditor(editAdvisor.dataset.editAdvisor);
+    const removeAdvisor=event.target.closest("[data-delete-advisor]");if(removeAdvisor)deleteAdvisor(removeAdvisor.dataset.deleteAdvisor);
+    const editInvitation=event.target.closest("[data-edit-invitation]");if(editInvitation)openInvitationCodeEditor(editInvitation.dataset.editInvitation);
+    const removeInvitation=event.target.closest("[data-delete-invitation]");if(removeInvitation)deleteInvitationCode(removeInvitation.dataset.deleteInvitation);
   });
   document.querySelectorAll(".modal-backdrop").forEach((backdrop)=>backdrop.addEventListener("click",(event)=>{if(event.target===backdrop&&backdrop.id!=="confirmModal")closeModal(backdrop.id);}));
   $("cancelConfirmButton").addEventListener("click",()=>resolveConfirm(false));$("acceptConfirmButton").addEventListener("click",()=>resolveConfirm(true));
@@ -1235,7 +1423,7 @@ function attachPhotoEvents() {
 }
 
 async function init() {
-  recruiterContext=recruiterContextFromUrl();currentDeliveryContact=recruiterContext;const savedRecruiter=readStoredRecruiterContext();recruiterSetupMode=Boolean(recruiterContext&&savedRecruiter&&savedRecruiter.name===recruiterContext.name&&savedRecruiter.whatsapp===recruiterContext.whatsapp);
+  pendingRecruiterContext=recruiterContextFromUrl();recruiterContext=null;currentDeliveryContact=null;recruiterSetupMode=false;
   renderAllQuestions();applyContent();renderRecruiterContextBanner();renderSavedCredentialPanel();drawPhotoPlaceholder();attachEvents();attachPhotoEvents();showStep(1,false);showConnection("Conectando con el sistema de inscripciones…");await initializeBackend();renderSavedCredentialPanel();await loadCredentialLogo();
   if(LINKED_RECORD_ID)await openAdminAccess();else await showDemoCredential();
 }
