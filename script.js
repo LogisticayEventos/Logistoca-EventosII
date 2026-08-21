@@ -28,6 +28,9 @@ const FIREBASE_CONFIG = {
 
 const ADMIN_EMAIL = "franboy1221@gmail.com";
 const TEAM_NAME = "Verde";
+const REGISTRATION_FEE = 10000;
+const TICKET_PROFIT_PER_SALE = 5000;
+const BULK_DELETE_PHRASE = "ELIMINAR TODO";
 const COMPANY_WHATSAPP = "573224343263";
 const TOTAL_STEPS = 4;
 const PAGE_PARAMS = new URLSearchParams(location.search);
@@ -123,6 +126,7 @@ let credentialLogoPromise = null;
 let questions = clone(DEFAULT_QUESTIONS);
 let content = clone(DEFAULT_CONTENT);
 let advisorProfiles = ADVISORS.map((name,index)=>normalizeAdvisorProfile({id:`advisor-${index+1}`,name,whatsapp:"",active:true},index));
+let selfRegisteredAdvisorProfiles = [];
 let recruiterInviteCodes = [];
 let currentStep = 1;
 let isSubmitting = false;
@@ -135,10 +139,12 @@ let firebaseReady = false;
 let configurationLoaded = false;
 let publicUser = null;
 let questionUnsubscribe = null;
+let recruiterProfilesUnsubscribe = null;
 let recordsUnsubscribe = null;
 let records = [];
 let filteredRecords = [];
 let filteredPaymentRecords = [];
+let filteredTicketRecords = [];
 let demoAdmin = false;
 let linkedRecordOpened = false;
 let confirmResolver = null;
@@ -150,12 +156,15 @@ let qrScannerBusy = false;
 let qrScannerLastCheck = 0;
 let qrDetector = null;
 let scannerRecordId = "";
+let scannerSelectionRecordId = "";
+let scannerSelections = new Set();
 let recruiterContext = null;
 let pendingRecruiterContext = null;
 let currentDeliveryContact = null;
 let recruiterSetupMode = false;
 let activeSettingsTab = "team";
 let latestInvitationCodeReveal = "";
+let bulkDeleteRunning = false;
 let photoState = { image: null, zoom: 1, panX: 0, panY: 0, dragging: false, pointerX: 0, pointerY: 0 };
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -165,7 +174,32 @@ function normalizeText(value) { return String(value || "").normalize("NFD").repl
 function safeImage(value) { return /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(value || "") ? value : ""; }
 function timestampToDate(value) { if (!value) return null; if (typeof value.toDate === "function") return value.toDate(); const date = value instanceof Date ? value : new Date(value); return Number.isNaN(date.getTime()) ? null : date; }
 function formatDate(value, withTime = false) { const date = timestampToDate(value); if (!date) return "Pendiente"; return new Intl.DateTimeFormat("es-CO", withTime ? { timeZone:"America/Bogota", dateStyle:"medium", timeStyle:"short" } : { timeZone:"America/Bogota", dateStyle:"medium" }).format(date); }
+function formatMoney(value) { return new Intl.NumberFormat("es-CO",{style:"currency",currency:"COP",maximumFractionDigits:0}).format(Number(value)||0); }
 function createLocalId(prefix="item") { try{return `${prefix}-${crypto.randomUUID()}`;}catch{return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2,9)}`;} }
+
+function recordMeetingDate(record={}) {
+  const stored=String(record.meetingDate||"");if(/^\d{4}-\d{2}-\d{2}$/.test(stored))return stored;
+  try { const answers=JSON.parse(record.answersJson||"{}");if(/^\d{4}-\d{2}-\d{2}$/.test(String(answers.meetingDate||"")))return answers.meetingDate; } catch {}
+  const created=timestampToDate(record.createdAt);if(!created)return content.meetingDate;
+  const weekday=new Intl.DateTimeFormat("en-US",{timeZone:"America/Bogota",weekday:"short"}).format(created);const index={Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6}[weekday];
+  return shiftDateInput(localDateInputValue(created),(6-(index??6)+7)%7);
+}
+
+function meetingDateLabel(value) { const date=localDateFromInput(value);return date?new Intl.DateTimeFormat("es-CO",{timeZone:"America/Bogota",weekday:"short",day:"numeric",month:"short",year:"numeric"}).format(date):"Sin fecha"; }
+function recordAttended(record={}) {
+  if(Object.prototype.hasOwnProperty.call(record,"meetingAttended"))return record.meetingAttended===true;
+  return record.registrationSheetPurchased===true;
+}
+function recordPaymentAmount(record={}) { return record.registrationSheetPurchased===true?(Number(record.registrationPaymentAmount)||REGISTRATION_FEE):0; }
+function recordTicketsReceived(record={}) { return record.ticketsReceived===true; }
+function recordTicketsSold(record={}) { const value=Number(record.ticketsSold);return Number.isInteger(value)&&value>=0?value:0; }
+function recordTicketMoney(record={}) { return Math.max(0,Number(record.ticketMoneyDelivered)||0); }
+function recordTicketProfit(record={}) { return recordTicketsSold(record)*TICKET_PROFIT_PER_SALE; }
+function recordConvener(record={}) { return String(record.recruiterName||record.advisor||"Sin registrar"); }
+function attendanceStatusBadge(record) { return recordAttended(record)?'<span class="attendance-status is-attended">Asistió</span>':'<span class="attendance-status is-pending">Pendiente</span>'; }
+function workflowStatusBadge(record) { const attended=recordAttended(record);const paid=record.registrationSheetPurchased===true;if(attended&&paid)return'<span class="workflow-status is-paid">Asistió y pagó</span>';if(attended)return'<span class="workflow-status is-attended">Asistió · pago pendiente</span>';if(paid)return'<span class="workflow-status is-payment-only">Pagó · asistencia pendiente</span>';return'<span class="workflow-status is-pending">Pendiente de reunión</span>'; }
+function ticketStatusBadge(record) { return recordTicketsReceived(record)?'<span class="ticket-status is-received">Recibió boletas</span>':'<span class="ticket-status is-pending">Sin boletas</span>'; }
+function ticketProgramBadge(record) { const program=String(record.ticketProgram||"");return ["Turismo","Mitad"].includes(program)?`<span class="ticket-program is-${program==="Turismo"?"tourism":"half"}">${escapeHTML(program)}</span>`:'<span class="ticket-program is-pending">Sin definir</span>'; }
 
 function normalizeAdvisorProfile(value={},index=0) {
   const name=titleCase(String(value.name||"").replace(/[^\p{L}\s'.-]/gu,"").replace(/\s+/g," ").trim().slice(0,90));
@@ -180,6 +214,21 @@ function normalizeAdvisorProfiles(values,fallbackNames=ADVISORS) {
   source.forEach((value,index)=>{const advisor=normalizeAdvisorProfile(typeof value==="string"?{name:value}:value,index);const key=normalizeText(advisor.name);if(!advisor.name||seen.has(key))return;seen.add(key);clean.push(advisor);});
   return clean.length?clean:normalizeAdvisorProfiles([],ADVISORS);
 }
+
+function normalizeSelfRegisteredAdvisor(value={},documentId="") {
+  const profile=normalizeAdvisorProfile({id:`self-${documentId}`,...value});
+  if(!profile.name||!profile.whatsapp||!documentId)return null;
+  const parts=profile.name.split(/\s+/);const firstName=titleCase(value.firstName||parts.shift()||"");const lastName=titleCase(value.lastName||parts.join(" "));
+  return {...profile,firstName,lastName,source:"self",documentId:String(documentId),createdByUid:String(value.createdByUid||"")};
+}
+
+function advisorDirectoryProfiles() { return [...advisorProfiles.map((advisor)=>({...advisor,source:"admin"})),...selfRegisteredAdvisorProfiles]; }
+
+function availableAdvisorProfiles() {
+  const seen=new Set();return advisorDirectoryProfiles().filter((advisor)=>{const key=normalizeText(advisor.name);if(!key||seen.has(key))return false;seen.add(key);return true;});
+}
+
+function findAdvisorProfile(id) { return advisorDirectoryProfiles().find((advisor)=>advisor.id===id)||null; }
 
 function normalizeInvitationCodes(values) {
   if(!Array.isArray(values))return[];const seen=new Set();
@@ -199,14 +248,14 @@ function generateInvitationCodeValue() {
   return `REC-${groups.join("-")}`;
 }
 
-function activeAdvisorNames() { return advisorProfiles.filter((advisor)=>advisor.active).map((advisor)=>advisor.name).sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"})); }
+function activeAdvisorNames() { return availableAdvisorProfiles().filter((advisor)=>advisor.active).map((advisor)=>advisor.name).sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"})); }
 
 function syncAdvisorQuestionOptions() {
   const names=activeAdvisorNames();const advisorQuestion=questions.find((question)=>question.id==="advisor");if(advisorQuestion)advisorQuestion.options=names.length?names:[ADVISORS[0]];
 }
 
 function advisorContactByName(name) {
-  const profile=advisorProfiles.find((advisor)=>advisor.active&&normalizeText(advisor.name)===normalizeText(name));if(!profile?.whatsapp)return null;
+  const profile=availableAdvisorProfiles().find((advisor)=>advisor.active&&normalizeText(advisor.name)===normalizeText(name));if(!profile?.whatsapp)return null;
   const parts=profile.name.split(/\s+/);return{firstName:parts[0],lastName:parts.slice(1).join(" "),name:profile.name,whatsapp:profile.whatsapp};
 }
 
@@ -402,11 +451,27 @@ function openAccessChooser() {
 }
 
 function openRecruiterSetup() {
-  closeModal("accessTypeModal");const saved=recruiterContext||readStoredRecruiterContext();
+  closeModal("accessTypeModal");const ownProfile=selfRegisteredAdvisorProfiles.find((advisor)=>advisor.createdByUid&&advisor.createdByUid===auth?.currentUser?.uid);const saved=ownProfile||recruiterContext||readStoredRecruiterContext();
   $("recruiterForm").reset();$("recruiterFormError").textContent="";
   if(saved){$("recruiterFirstName").value=saved.firstName;$("recruiterLastName").value=saved.lastName;$("recruiterWhatsapp").value=saved.whatsapp;}
+  $("recruiterModalTitle").textContent=ownProfile?"Actualiza tus datos de asesor":"Agrégate a la lista de asesores";$("recruiterSubmitButton").textContent=ownProfile?"Actualizar mis datos":"Agregarme como asesor";
   if(configurationLoaded&&!recruiterInviteCodes.some((code)=>code.active))$("recruiterFormError").textContent="No hay códigos activos. Solicita al administrador que cree uno.";
   openModal("recruiterModal");setTimeout(()=>$("recruiterFirstName").focus(),100);
+}
+
+async function registerRecruiterAsAdvisor(profile,invitation) {
+  const own=selfRegisteredAdvisorProfiles.find((advisor)=>advisor.createdByUid&&advisor.createdByUid===(auth?.currentUser?.uid||publicUser?.uid));
+  const others=advisorDirectoryProfiles().filter((advisor)=>advisor.id!==own?.id);
+  const sameName=others.find((advisor)=>normalizeText(advisor.name)===normalizeText(profile.name));const sameWhatsapp=others.find((advisor)=>advisor.whatsapp===profile.whatsapp);
+  if(sameName&&sameName.whatsapp===profile.whatsapp)return{alreadyExists:true};
+  if(sameName)throw new Error("Ya existe un asesor con ese nombre. Comunícate con el administrador para actualizarlo.");
+  if(sameWhatsapp)throw new Error("Ese WhatsApp ya pertenece a otro asesor. Revisa el número o comunícate con el administrador.");
+  const documentId=IS_DEMO?(publicUser?.uid||"demo-public"):auth?.currentUser?.uid;if(!documentId)throw new Error("Espera unos segundos y vuelve a intentarlo.");
+  const localData={firstName:profile.firstName,lastName:profile.lastName,name:profile.name,whatsapp:profile.whatsapp,active:true,createdByUid:documentId};
+  if(IS_DEMO){const next=normalizeSelfRegisteredAdvisor(localData,documentId);const index=selfRegisteredAdvisorProfiles.findIndex((advisor)=>advisor.documentId===documentId);if(index>=0)selfRegisteredAdvisorProfiles[index]=next;else selfRegisteredAdvisorProfiles.push(next);return{profile:next};}
+  const reference=db.collection("asesores_reclutadores").doc(documentId);const snapshot=await reference.get();const timestamp=firebase.firestore.FieldValue.serverTimestamp();
+  await reference.set({...localData,invitationHash:profile.accessHash,invitationProof:{...invitation},source:"Autoregistro de reclutador",updatedAt:timestamp,...(snapshot.exists?{}:{createdAt:timestamp})},{merge:true});
+  const next=normalizeSelfRegisteredAdvisor(localData,documentId);const index=selfRegisteredAdvisorProfiles.findIndex((advisor)=>advisor.documentId===documentId);if(index>=0)selfRegisteredAdvisorProfiles[index]=next;else selfRegisteredAdvisorProfiles.push(next);return{profile:next};
 }
 
 async function saveRecruiterSetup(event) {
@@ -415,15 +480,15 @@ async function saveRecruiterSetup(event) {
   if(!configurationLoaded){$("recruiterFormError").textContent="Espera unos segundos mientras cargamos los accesos autorizados.";return;}
   const code=normalizeInvitationCode($("recruiterInvitationCode").value);if(code.length<4){$("recruiterFormError").textContent="El código debe tener al menos 4 caracteres.";return;}
   const button=$("recruiterSubmitButton");button.disabled=true;button.textContent="Validando código…";
-  let accessHash="";try{accessHash=await hashInvitationCode(code);}catch(error){$("recruiterFormError").textContent=error.message;button.disabled=false;button.textContent="Validar y crear mi enlace";return;}
-  if(!recruiterInviteCodes.some((invite)=>invite.active&&invite.hash===accessHash)){$("recruiterFormError").textContent="El código no existe, está desactivado o fue reemplazado.";button.disabled=false;button.textContent="Validar y crear mi enlace";return;}
+  let accessHash="";try{accessHash=await hashInvitationCode(code);}catch(error){$("recruiterFormError").textContent=error.message;button.disabled=false;button.textContent="Agregarme como asesor";return;}
+  const invitation=recruiterInviteCodes.find((invite)=>invite.active&&invite.hash===accessHash);if(!invitation){$("recruiterFormError").textContent="El código no existe, está desactivado o fue reemplazado.";button.disabled=false;button.textContent="Agregarme como asesor";return;}
   const next=normalizeRecruiterContext({firstName:$("recruiterFirstName").value,lastName:$("recruiterLastName").value,whatsapp:$("recruiterWhatsapp").value,accessHash});
-  if(!next){$("recruiterFormError").textContent="Revisa el nombre, apellido y WhatsApp. El número debe comenzar por 3 y tener 10 dígitos.";button.disabled=false;button.textContent="Validar y crear mi enlace";return;}
-  recruiterContext=next;pendingRecruiterContext=null;currentDeliveryContact=next;recruiterSetupMode=true;storeRecruiterContext(next);
-  const url=new URL(personalizedRecruiterUrl(next));history.replaceState({},"",`${url.pathname}${url.search}${url.hash}`);
-  renderAllQuestions(true);renderRecruiterContextBanner();updateWhatsappLink();closeModal("recruiterModal");showToast("Enlace de reclutador listo para compartir.");
-  button.disabled=false;button.textContent="Validar y crear mi enlace";
-  $("recruiterContextBanner").scrollIntoView({behavior:"smooth",block:"center"});
+  if(!next){$("recruiterFormError").textContent="Revisa el nombre, apellido y WhatsApp. El número debe comenzar por 3 y tener 10 dígitos.";button.disabled=false;button.textContent="Agregarme como asesor";return;}
+  button.textContent="Agregándote como asesor…";
+  try{
+    const result=await registerRecruiterAsAdvisor(next,invitation);storeRecruiterContext(next);syncAdvisorQuestionOptions();renderAllQuestions(true);renderTeamConfiguration();closeModal("recruiterModal");showToast(result.alreadyExists?"Ya apareces en la lista de asesores.":"Listo: ya apareces en la lista de asesores.");
+  }catch(error){console.error(error);$("recruiterFormError").textContent=error?.code==="permission-denied"?"No fue posible agregarte en este momento. Comunícate con el administrador.":error.message||"No fue posible agregarte como asesor.";}
+  finally{button.disabled=false;button.textContent=selfRegisteredAdvisorProfiles.some((advisor)=>advisor.createdByUid===(auth?.currentUser?.uid||publicUser?.uid))?"Actualizar mis datos":"Agregarme como asesor";}
 }
 
 function requiredMark(question) { return question.required ? " *" : ""; }
@@ -824,11 +889,19 @@ async function initializeBackend() {
     const initialUser=await new Promise((resolve)=>{const stop=auth.onAuthStateChanged((user)=>{stop();resolve(user);});});
     publicUser=initialUser;
     if (!publicUser) publicUser=(await auth.signInAnonymously()).user;
-    firebaseReady=true; subscribeQuestionConfig(); hideConnection();
+    firebaseReady=true;subscribeQuestionConfig();subscribeSelfRegisteredAdvisors();hideConnection();
   } catch(error) {
     console.error("Firebase initialization",error);
     showConnection("El sistema de registros todavía no está activado. Comunícate con tu asesor.",true);
   }
+}
+
+function subscribeSelfRegisteredAdvisors() {
+  if(IS_DEMO||!db)return;recruiterProfilesUnsubscribe?.();
+  recruiterProfilesUnsubscribe=db.collection("asesores_reclutadores").onSnapshot((snapshot)=>{
+    selfRegisteredAdvisorProfiles=snapshot.docs.map((document)=>normalizeSelfRegisteredAdvisor(document.data(),document.id)).filter(Boolean);
+    syncAdvisorQuestionOptions();renderAllQuestions(true);renderTeamConfiguration();
+  },(error)=>console.warn("No se pudo cargar la lista de reclutadores",error));
 }
 
 function subscribeQuestionConfig() {
@@ -849,7 +922,7 @@ async function saveRegistration() {
   const delivery=currentDeliveryContact||deliveryContactForCurrentForm();
   if(recruiterContext)values.advisor=recruiterContext.name;
   if(delivery){values.recruiterName=delivery.name;values.recruiterWhatsapp=delivery.whatsapp;}
-  values.meetingConsent=$("meetingConsent").checked;values.privacyConsent=$("privacyConsent").checked;
+  values.meetingConsent=$("meetingConsent").checked;values.privacyConsent=$("privacyConsent").checked;values.meetingDate=content.meetingDate;
   const payload={
     firstName:titleCase(values.firstName),lastName:titleCase(values.lastName),age:Number(values.age),gender:String(values.gender),advisor:String(values.advisor),team:TEAM_NAME,
     document:String(values.document),whatsapp:String(values.whatsapp),phone:String(values.phone),photoData:compressedPhotoData(),answersJson:JSON.stringify(values),status:"Nuevo",source:"Formulario web",
@@ -864,9 +937,9 @@ function demoRecords() {
   const now=Date.now();
   const andreaAnswers={advisor:"Fran Santamaria",firstName:"Andrea",lastName:"Rojas",phone:"3001112233",whatsapp:"3001112233",document:"1023456789",age:"19",gender:"Femenino",address:"Bogotá, barrio Restrepo",events:["Logística","Conciertos"],places:["Bogotá","Soacha"],shirtSize:"M",pantsSize:"30",payment:["Nequi"],schedules:["02:00 pm - 07:00 pm"],peopleAges:["15 - 20 años","20 en adelante"],experience:"Apoyo logístico en eventos familiares.",nextWeek:"Sí",days:["Viernes","Sábado","Domingo"],disease:"No",swim:"Sí",sport:"Sí",understands:"Sí",meetingConsent:true,privacyConsent:true};
   return [
-    {id:"DEMO-001",firstName:"Andrea",lastName:"Rojas",age:19,gender:"Femenino",advisor:"Fran Santamaria",team:"Verde",document:"1023456789",whatsapp:"3001112233",phone:"3001112233",photoData:"",answersJson:JSON.stringify(andreaAnswers),status:"Nuevo",createdAt:new Date(now-45*60000),registrationSheetPurchased:true,registrationSheetPurchasedAt:new Date(now-30*60000),registrationSheetPurchasedBy:"admin@demo.local"},
-    {id:"DEMO-002",firstName:"Daniel",lastName:"Gómez",age:21,gender:"Masculino",advisor:"Vanessa Barragan",team:"Verde",document:"1023456790",whatsapp:"3002223344",phone:"3002223344",photoData:"",answersJson:"{}",status:"Nuevo",createdAt:new Date(now-24*3600000)},
-    {id:"DEMO-003",firstName:"Laura",lastName:"Martínez",age:18,gender:"Femenino",advisor:"Fran Santamaria",team:"Verde",document:"1023456791",whatsapp:"3003334455",phone:"3003334455",photoData:"",answersJson:"{}",status:"Nuevo",createdAt:new Date(now-3*86400000),registrationSheetPurchased:true,registrationSheetPurchasedAt:new Date(now-2*86400000),registrationSheetPurchasedBy:"admin@demo.local"},
+    {id:"DEMO-001",firstName:"Andrea",lastName:"Rojas",age:19,gender:"Femenino",advisor:"Fran Santamaria",team:"Verde",document:"1023456789",whatsapp:"3001112233",phone:"3001112233",photoData:"",answersJson:JSON.stringify(andreaAnswers),meetingDate:content.meetingDate,status:"Nuevo",createdAt:new Date(now-45*60000),meetingAttended:true,meetingAttendedAt:new Date(now-35*60000),meetingAttendedBy:"admin@demo.local",registrationSheetPurchased:true,registrationPaymentAmount:REGISTRATION_FEE,registrationSheetPurchasedAt:new Date(now-30*60000),registrationSheetPurchasedBy:"admin@demo.local",ticketsReceived:true,ticketsReceivedAt:new Date(now-28*60000),ticketsReceivedBy:"admin@demo.local",ticketProgram:"Turismo",ticketsSold:8,ticketMoneyDelivered:160000},
+    {id:"DEMO-002",firstName:"Daniel",lastName:"Gómez",age:21,gender:"Masculino",advisor:"Vanessa Barragan",team:"Verde",document:"1023456790",whatsapp:"3002223344",phone:"3002223344",photoData:"",answersJson:"{}",meetingDate:content.meetingDate,status:"Nuevo",createdAt:new Date(now-24*3600000)},
+    {id:"DEMO-003",firstName:"Laura",lastName:"Martínez",age:18,gender:"Femenino",advisor:"Fran Santamaria",team:"Verde",document:"1023456791",whatsapp:"3003334455",phone:"3003334455",photoData:"",answersJson:"{}",meetingDate:content.meetingDate,status:"Nuevo",createdAt:new Date(now-3*86400000),meetingAttended:true,meetingAttendedAt:new Date(now-2*86400000),ticketsReceived:true,ticketsReceivedAt:new Date(now-2*86400000),ticketProgram:"Mitad",ticketsSold:5,ticketMoneyDelivered:100000},
   ];
 }
 
@@ -943,11 +1016,11 @@ async function logoutAdmin() {
 
 async function ensureQuestionConfig() {
   const ref=db.collection("configuracion").doc("formulario_inscripcion");const snapshot=await ref.get();
-  if(!snapshot.exists){advisorProfiles=normalizeAdvisorProfiles(advisorProfiles);recruiterInviteCodes=[];syncAdvisorQuestionOptions();await ref.set({questions:questions.map(questionForStorage),content:normalizeContent(content),advisors:advisorProfiles,recruiterInviteCodes,updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:ADMIN_EMAIL});}
+  if(!snapshot.exists){advisorProfiles=normalizeAdvisorProfiles(advisorProfiles);recruiterInviteCodes=[];syncAdvisorQuestionOptions();await ref.set({questions:questions.map(questionForStorage),content:normalizeContent(content),advisors:advisorProfiles,recruiterInviteCodes,activeRecruiterInviteHashes:[],updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:ADMIN_EMAIL});}
   else {
     const data=snapshot.data();if(Array.isArray(data.questions))questions=data.questions.map(normalizeQuestion);content=normalizeContent(data.content||DEFAULT_CONTENT);
     const advisorQuestion=questions.find((question)=>question.id==="advisor");advisorProfiles=normalizeAdvisorProfiles(data.advisors,advisorQuestion?.options?.length?advisorQuestion.options:ADVISORS);recruiterInviteCodes=normalizeInvitationCodes(data.recruiterInviteCodes);syncAdvisorQuestionOptions();
-    const missing={};if(!data.content)missing.content=content;if(!Array.isArray(data.advisors))missing.advisors=advisorProfiles;if(!Array.isArray(data.recruiterInviteCodes))missing.recruiterInviteCodes=recruiterInviteCodes;
+    const missing={};const activeHashes=recruiterInviteCodes.filter((code)=>code.active).map((code)=>code.hash);if(!data.content)missing.content=content;if(!Array.isArray(data.advisors))missing.advisors=advisorProfiles;if(!Array.isArray(data.recruiterInviteCodes))missing.recruiterInviteCodes=recruiterInviteCodes;if(!Array.isArray(data.activeRecruiterInviteHashes)||data.activeRecruiterInviteHashes.length!==activeHashes.length||activeHashes.some((hash)=>!data.activeRecruiterInviteHashes.includes(hash)))missing.activeRecruiterInviteHashes=activeHashes;
     if(Object.keys(missing).length)await ref.set({...missing,questions:questions.map(questionForStorage),updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:ADMIN_EMAIL},{merge:true});
   }
   configurationLoaded=true;renderAllQuestions(true);applyContent();renderTeamConfiguration();
@@ -980,9 +1053,10 @@ async function openLinkedRecord() {
 }
 
 function renderAdminData() {
-  renderDashboard();renderAdvisorFilter();renderRecords();renderPayments();
-  const purchases=records.filter((record)=>record.registrationSheetPurchased===true).length;
-  $("sheetPurchaseCount").textContent=`${purchases} ${purchases===1?"compra":"compras"}`;
+  renderDashboard();renderAdvisorFilter();renderRecords();renderPayments();renderTickets();
+  const attended=records.filter((record)=>recordMeetingDate(record)===content.meetingDate&&recordAttended(record)).length;
+  $("meetingAttendanceCount").textContent=`${attended} ${attended===1?"asistente":"asistentes"}`;
+  document.querySelectorAll("[data-delete-all-records]").forEach((button)=>{button.disabled=records.length===0||bulkDeleteRunning;button.title=records.length?"Elimina definitivamente todos los registros, asistencias y pagos":"No hay registros para eliminar";});
   if(scannerRecordId){const record=records.find((item)=>item.id===scannerRecordId);if(record)renderScannerRecord(record);}
 }
 
@@ -1002,20 +1076,58 @@ function recordIdFromQr(rawValue) {
   } catch { return""; }
 }
 
-function sheetPurchaseBadge(record) {
-  return record.registrationSheetPurchased===true?'<span class="purchase-badge is-complete">Comprada</span>':'<span class="purchase-badge">Pendiente</span>';
-}
-
 function renderScannerRecord(record) {
   if(!record)return;
-  scannerRecordId=record.id;const purchased=record.registrationSheetPurchased===true;
-  const purchaseDate=purchased?formatDate(record.registrationSheetPurchasedAt,true):"";
-  const purchaseBy=String(record.registrationSheetPurchasedBy||"Administrador");
-  $("scannerResult").innerHTML=`<article class="scanner-record-card${purchased?" is-purchased":""}"><div class="scanner-record-heading">${recordPhoto(record,"scanner-record-photo")}<div><span class="eyebrow green-text">QR leído correctamente</span><h3>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</h3><div class="record-meta"><span>Documento: ${escapeHTML(record.document)}</span><span>${escapeHTML(record.age)} años</span><span>Equipo ${escapeHTML(record.team||TEAM_NAME)}</span></div></div>${sheetPurchaseBadge(record)}</div><dl class="scanner-record-data"><div><dt>Asesor(a)</dt><dd>${escapeHTML(record.advisor||"Sin registrar")}</dd></div><div><dt>WhatsApp</dt><dd>${escapeHTML(formatWhatsapp(record.whatsapp))}</dd></div><div><dt>Teléfono</dt><dd>${escapeHTML(formatWhatsapp(record.phone))}</dd></div><div><dt>Fecha de registro</dt><dd>${escapeHTML(formatDate(record.createdAt,true))}</dd></div></dl><div class="purchase-confirmation${purchased?" is-complete":""}"><span class="purchase-confirmation-icon" aria-hidden="true">${purchased?"✓":"$"}</span><div><strong>${purchased?"Compra de la hoja confirmada":"Hoja de inscripción pendiente"}</strong><p>${purchased?`Registrada ${escapeHTML(purchaseDate)} por ${escapeHTML(purchaseBy)}.`:"Confirma únicamente después de recibir el pago de la hoja de inscripción."}</p></div><button class="button ${purchased?"button-ghost":"button-primary"}" type="button" data-mark-sheet="${escapeHTML(record.id)}" ${purchased?"disabled":""}>${purchased?"Compra ya registrada":"Confirmar compra de la hoja"}</button></div><button class="text-button scanner-open-record" type="button" data-view-record="${escapeHTML(record.id)}">Ver formulario completo</button></article>`;
+  scannerRecordId=record.id;
+  if(scannerSelectionRecordId!==record.id){scannerSelectionRecordId=record.id;scannerSelections=new Set();}
+  const statuses=[
+    {id:"attendance",icon:"✓",label:"Asistió",help:"Llegó a la reunión",confirmed:recordAttended(record)},
+    {id:"payment",icon:"$",label:"Pagó",help:"Entregó $10.000",confirmed:record.registrationSheetPurchased===true},
+    {id:"tickets",icon:"◇",label:"Boletas",help:"Recibió boletas",confirmed:recordTicketsReceived(record)},
+  ];
+  const available=statuses.some((status)=>!status.confirmed);const hasSelection=scannerSelections.size>0;
+  const choices=statuses.map((status)=>{const selected=scannerSelections.has(status.id);const state=status.confirmed?" is-confirmed":selected?" is-selected":"";return`<button class="scanner-status-choice${state}" type="button" data-scanner-status="${status.id}" data-record-id="${escapeHTML(record.id)}" aria-pressed="${status.confirmed||selected}" ${status.confirmed?"disabled":""}><span aria-hidden="true">${status.confirmed?"✓":status.icon}</span><strong>${status.label}</strong><small>${status.confirmed?"Ya registrado":status.help}</small></button>`;}).join("");
+  $("scannerResult").innerHTML=`<article class="scanner-record-card${hasSelection?" has-selection":""}"><div class="scanner-record-heading">${recordPhoto(record,"scanner-record-photo")}<div><span class="eyebrow green-text">QR leído correctamente</span><h3>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</h3><div class="record-meta"><span>Documento: ${escapeHTML(record.document)}</span><span>${escapeHTML(record.age)} años</span><span>Equipo ${escapeHTML(record.team||TEAM_NAME)}</span></div></div><div class="scanner-heading-statuses">${workflowStatusBadge(record)}${ticketStatusBadge(record)}</div></div><dl class="scanner-record-data"><div><dt>Asesor(a)</dt><dd>${escapeHTML(record.advisor||"Sin registrar")}</dd></div><div><dt>Reunión</dt><dd>${escapeHTML(meetingDateLabel(recordMeetingDate(record)))}</dd></div><div><dt>WhatsApp</dt><dd>${escapeHTML(formatWhatsapp(record.whatsapp))}</dd></div><div><dt>Fecha de registro</dt><dd>${escapeHTML(formatDate(record.createdAt,true))}</dd></div></dl><section class="scanner-status-selector" aria-labelledby="scannerStatusSelectorTitle"><div><span class="eyebrow green-text">Registro de la reunión</span><h4 id="scannerStatusSelectorTitle">Selecciona mínimo una opción</h4><p>Puedes marcar una, dos o las tres. Las opciones ya guardadas aparecen confirmadas.</p></div><div class="scanner-status-choice-grid">${choices}</div><div class="scanner-selection-footer"><small>${available?(hasSelection?`${scannerSelections.size} ${scannerSelections.size===1?"opción seleccionada":"opciones seleccionadas"}`:"Selecciona al menos una opción para continuar."):"Los tres estados ya están registrados."}</small><button class="button button-primary" type="button" data-save-scanner-status="${escapeHTML(record.id)}" ${!hasSelection?"disabled":""}>Guardar selección</button></div></section><button class="text-button scanner-open-record" type="button" data-view-record="${escapeHTML(record.id)}">Ver formulario completo</button></article>`;
+}
+
+function scannerStatusConfirmed(record,status) {
+  if(status==="attendance")return recordAttended(record);
+  if(status==="payment")return record.registrationSheetPurchased===true;
+  if(status==="tickets")return recordTicketsReceived(record);
+  return false;
+}
+
+function toggleScannerSelection(id,status) {
+  const record=records.find((item)=>item.id===id);if(!record||!["attendance","payment","tickets"].includes(status)||scannerStatusConfirmed(record,status))return;
+  if(scannerSelectionRecordId!==id){scannerSelectionRecordId=id;scannerSelections=new Set();}
+  if(scannerSelections.has(status))scannerSelections.delete(status);else scannerSelections.add(status);
+  renderScannerRecord(record);
+}
+
+async function saveScannerSelections(id) {
+  const record=records.find((item)=>item.id===id);if(!record)return;
+  const selected=[...scannerSelections].filter((status)=>!["attendance","payment","tickets"].includes(status)?false:!scannerStatusConfirmed(record,status));
+  if(scannerSelectionRecordId!==id||selected.length<1){showToast("Selecciona al menos una opción.");return;}
+  const labels={attendance:"asistencia",payment:"pago",tickets:"boletas"};const actor=IS_DEMO?($("adminUserEmail").textContent||"Administrador"):(auth.currentUser?.email||ADMIN_EMAIL);const savedAt=new Date();
+  const localUpdates={};const firestoreUpdates={};const serverTime=!IS_DEMO?firebase.firestore.FieldValue.serverTimestamp():null;
+  if(selected.includes("attendance")){Object.assign(localUpdates,{meetingAttended:true,meetingAttendedAt:savedAt,meetingAttendedBy:actor});Object.assign(firestoreUpdates,{meetingAttended:true,meetingAttendedAt:serverTime,meetingAttendedBy:actor});}
+  if(selected.includes("payment")){
+    Object.assign(localUpdates,{registrationSheetPurchased:true,registrationPaymentAmount:REGISTRATION_FEE,registrationSheetPurchasedAt:savedAt,registrationSheetPurchasedBy:actor});Object.assign(firestoreUpdates,{registrationSheetPurchased:true,registrationPaymentAmount:REGISTRATION_FEE,registrationSheetPurchasedAt:serverTime,registrationSheetPurchasedBy:actor});
+    if(!selected.includes("attendance")&&!Object.prototype.hasOwnProperty.call(record,"meetingAttended")){localUpdates.meetingAttended=false;firestoreUpdates.meetingAttended=false;}
+  }
+  if(selected.includes("tickets")){Object.assign(localUpdates,{ticketsReceived:true,ticketsReceivedAt:savedAt,ticketsReceivedBy:actor});Object.assign(firestoreUpdates,{ticketsReceived:true,ticketsReceivedAt:serverTime,ticketsReceivedBy:actor});}
+  setLoading(true,"Guardando selección del QR…");
+  try {
+    if(!IS_DEMO)await db.collection("inscripciones_personal").doc(id).update(firestoreUpdates);
+    Object.assign(record,localUpdates);scannerSelections=new Set();renderAdminData();if(!$("recordModal").hidden)showRecord(id);
+    const savedLabels=selected.map((status)=>labels[status]);const message=savedLabels.length===1?savedLabels[0]:`${savedLabels.slice(0,-1).join(", ")} y ${savedLabels.at(-1)}`;
+    showToast(`Se guardó ${message}.`);setScannerStatus("Selección guardada correctamente.","success");
+  } catch(error){console.error(error);showToast("No fue posible guardar la selección.");setScannerStatus("No fue posible actualizar el registro.","error");}
+  finally{setLoading(false);}
 }
 
 function renderScannerFailure(title,message) {
-  scannerRecordId="";$("scannerResult").innerHTML=`<div class="scanner-result-empty is-error"><span aria-hidden="true">!</span><h3>${escapeHTML(title)}</h3><p>${escapeHTML(message)}</p></div>`;
+  scannerRecordId="";scannerSelectionRecordId="";scannerSelections=new Set();$("scannerResult").innerHTML=`<div class="scanner-result-empty is-error"><span aria-hidden="true">!</span><h3>${escapeHTML(title)}</h3><p>${escapeHTML(message)}</p></div>`;
 }
 
 async function findScannerRecord(rawValue) {
@@ -1025,7 +1137,7 @@ async function findScannerRecord(rawValue) {
   try {
     if(!record&&!IS_DEMO&&db){const snapshot=await db.collection("inscripciones_personal").doc(id).get();if(snapshot.exists){record={id:snapshot.id,...snapshot.data()};records.unshift(record);}}
     if(!record){setScannerStatus("No encontramos un registro asociado a este QR.","error");renderScannerFailure("Registro no encontrado","Verifica que el carné corresponda a esta página y vuelve a intentarlo.");return;}
-    scannerRecordId=record.id;renderAdminData();renderScannerRecord(record);setScannerStatus("QR leído. Verifica los datos antes de confirmar la compra.","success");
+    scannerRecordId=record.id;renderAdminData();renderScannerRecord(record);setScannerStatus("QR leído. Selecciona al menos una opción y guarda.","success");
   } catch(error){console.error(error);setScannerStatus("No fue posible consultar el registro.","error");renderScannerFailure("Error de consulta","Revisa la conexión e inténtalo nuevamente.");}
 }
 
@@ -1072,18 +1184,48 @@ async function scanQrImage(event) {
   } catch(error){console.error(error);setScannerStatus("No fue posible leer esa imagen.","error");}
 }
 
+async function markMeetingAttendance(id) {
+  const record=records.find((item)=>item.id===id);if(!record)return;
+  if(recordAttended(record)){renderScannerRecord(record);showToast("La asistencia ya estaba confirmada.");return;}
+  const accepted=await confirmDialog(`¿Confirmas que ${record.firstName} ${record.lastName} asistió a la reunión?`,{title:"Confirmar asistencia",acceptText:"Sí, confirmar"});if(!accepted)return;
+  setLoading(true,"Confirmando asistencia…");
+  try {
+    const attendedAt=new Date();const attendedBy=IS_DEMO?($("adminUserEmail").textContent||"Administrador"):(auth.currentUser?.email||ADMIN_EMAIL);
+    if(!IS_DEMO)await db.collection("inscripciones_personal").doc(id).update({meetingAttended:true,meetingAttendedAt:firebase.firestore.FieldValue.serverTimestamp(),meetingAttendedBy:attendedBy});
+    Object.assign(record,{meetingAttended:true,meetingAttendedAt:attendedAt,meetingAttendedBy:attendedBy});renderAdminData();
+    if(!$("recordModal").hidden)showRecord(id);showToast("Asistencia confirmada.");setScannerStatus("Asistencia agregada al registro.","success");
+  } catch(error){console.error(error);showToast("No se pudo confirmar la asistencia.");setScannerStatus("No fue posible guardar la asistencia.","error");}
+  finally{setLoading(false);}
+}
+
 async function markRegistrationSheetPurchased(id) {
   const record=records.find((item)=>item.id===id);if(!record)return;
-  if(record.registrationSheetPurchased===true){renderScannerRecord(record);showToast("La compra de esta hoja ya estaba registrada.");return;}
-  const accepted=await confirmDialog(`¿Confirmas que ${record.firstName} ${record.lastName} ya compró la hoja de inscripción?`,{title:"Registrar compra",acceptText:"Sí, registrar"});if(!accepted)return;
-  setLoading(true,"Registrando compra de la hoja…");
+  if(record.registrationSheetPurchased===true){renderScannerRecord(record);showToast("El pago ya estaba registrado.");return;}
+  const accepted=await confirmDialog(`¿Confirmas que ${record.firstName} ${record.lastName} pagó $10.000 por la inscripción?`,{title:"Registrar pago",acceptText:"Sí, registrar $10.000"});if(!accepted)return;
+  setLoading(true,"Registrando pago…");
   try {
-    const purchasedAt=new Date();const purchasedBy=IS_DEMO?($("adminUserEmail").textContent||"Administrador"):auth.currentUser.email;
-    if(IS_DEMO)Object.assign(record,{registrationSheetPurchased:true,registrationSheetPurchasedAt:purchasedAt,registrationSheetPurchasedBy:purchasedBy});
-    else await db.collection("inscripciones_personal").doc(id).update({registrationSheetPurchased:true,registrationSheetPurchasedAt:firebase.firestore.FieldValue.serverTimestamp(),registrationSheetPurchasedBy:purchasedBy});
-    Object.assign(record,{registrationSheetPurchased:true,registrationSheetPurchasedAt:purchasedAt,registrationSheetPurchasedBy:purchasedBy});renderAdminData();
-    if(!$("recordModal").hidden)showRecord(id);showToast("Compra de la hoja registrada correctamente.");setScannerStatus("Compra confirmada y agregada al registro.","success");
-  } catch(error){console.error(error);showToast("No se pudo registrar la compra de la hoja.");setScannerStatus("No fue posible guardar la confirmación.","error");}
+    const purchasedAt=new Date();const purchasedBy=IS_DEMO?($("adminUserEmail").textContent||"Administrador"):(auth.currentUser?.email||ADMIN_EMAIL);
+    const localUpdates={registrationSheetPurchased:true,registrationPaymentAmount:REGISTRATION_FEE,registrationSheetPurchasedAt:purchasedAt,registrationSheetPurchasedBy:purchasedBy};
+    const firestoreUpdates={registrationSheetPurchased:true,registrationPaymentAmount:REGISTRATION_FEE,registrationSheetPurchasedAt:!IS_DEMO?firebase.firestore.FieldValue.serverTimestamp():purchasedAt,registrationSheetPurchasedBy:purchasedBy};
+    if(!Object.prototype.hasOwnProperty.call(record,"meetingAttended")){localUpdates.meetingAttended=false;firestoreUpdates.meetingAttended=false;}
+    if(!IS_DEMO)await db.collection("inscripciones_personal").doc(id).update(firestoreUpdates);
+    Object.assign(record,localUpdates);renderAdminData();
+    if(!$("recordModal").hidden)showRecord(id);showToast("Pago de $10.000 registrado.");setScannerStatus("Pago agregado al registro.","success");
+  } catch(error){console.error(error);showToast("No se pudo registrar el pago.");setScannerStatus("No fue posible guardar el pago.","error");}
+  finally{setLoading(false);}
+}
+
+async function deleteRegistrationPayment(id) {
+  const record=records.find((item)=>item.id===id);if(!record||record.registrationSheetPurchased!==true)return;
+  const accepted=await confirmDialog(`¿Eliminar el pago de $10.000 de ${record.firstName} ${record.lastName}? El registro se conservará.`,{title:"Eliminar pago",acceptText:"Sí, eliminar pago",danger:true});if(!accepted)return;
+  setLoading(true,"Eliminando pago…");
+  try {
+    const hadExplicitAttendance=Object.prototype.hasOwnProperty.call(record,"meetingAttended");const wasLegacyAttendee=!hadExplicitAttendance;
+    const fallbackAttendanceAt=record.meetingAttendedAt||record.registrationSheetPurchasedAt||new Date();const fallbackAttendanceBy=record.meetingAttendedBy||record.registrationSheetPurchasedBy||"Administrador";
+    if(!IS_DEMO){const remove=firebase.firestore.FieldValue.delete();const updates={registrationSheetPurchased:remove,registrationPaymentAmount:remove,registrationSheetPurchasedAt:remove,registrationSheetPurchasedBy:remove};if(wasLegacyAttendee)Object.assign(updates,{meetingAttended:true,meetingAttendedAt:fallbackAttendanceAt,meetingAttendedBy:fallbackAttendanceBy});await db.collection("inscripciones_personal").doc(id).update(updates);}
+    if(wasLegacyAttendee)Object.assign(record,{meetingAttended:true,meetingAttendedAt:fallbackAttendanceAt,meetingAttendedBy:fallbackAttendanceBy});delete record.registrationSheetPurchased;delete record.registrationPaymentAmount;delete record.registrationSheetPurchasedAt;delete record.registrationSheetPurchasedBy;renderAdminData();
+    if(!$("recordModal").hidden)showRecord(id);showToast("Pago eliminado; el registro se conservó.");setScannerStatus("El pago fue eliminado.","success");
+  } catch(error){console.error(error);showToast("No se pudo eliminar el pago.");setScannerStatus("No fue posible eliminar el pago.","error");}
   finally{setLoading(false);}
 }
 
@@ -1104,6 +1246,16 @@ function shiftDateInput(value,days) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,"0")}-${String(date.getUTCDate()).padStart(2,"0")}`;
 }
 
+function meetingDateValues() {
+  return [...new Set([content.meetingDate,...records.map(recordMeetingDate)].filter((value)=>/^\d{4}-\d{2}-\d{2}$/.test(String(value||""))))].sort((a,b)=>b.localeCompare(a));
+}
+
+function renderMeetingFilter(id,{defaultCurrent=true}={}) {
+  const select=$(id);if(!select)return"";const values=meetingDateValues();const previous=select.dataset.ready==="true"?select.value:(defaultCurrent&&values.includes(content.meetingDate)?content.meetingDate:"");
+  select.innerHTML=`<option value="">Todas las reuniones</option>${values.map((value)=>`<option value="${escapeHTML(value)}">${escapeHTML(meetingDateLabel(value))}</option>`).join("")}`;
+  select.value=values.includes(previous)?previous:"";select.dataset.ready="true";return select.value;
+}
+
 function initializeDateReportInputs() {
   if(!$("reportDateFrom")||!$("reportDateTo"))return;
   const today=localDateInputValue();if(!$("reportDateFrom").value)$("reportDateFrom").value=today;if(!$("reportDateTo").value)$("reportDateTo").value=today;
@@ -1120,20 +1272,21 @@ function renderDateReport() {
   if(!start||!end||start>end){error.textContent="La fecha inicial debe ser igual o anterior a la fecha final.";return;}
   const inRange=(value)=>{const date=timestampToDate(value);return Boolean(date&&date>=start&&date<=end);};
   const registrations=records.filter((record)=>inRange(record.createdAt));
-  const payments=records.filter((record)=>record.registrationSheetPurchased===true&&inRange(record.registrationSheetPurchasedAt)).sort((a,b)=>(timestampToDate(b.registrationSheetPurchasedAt)?.getTime()||0)-(timestampToDate(a.registrationSheetPurchasedAt)?.getTime()||0));
-  const pending=registrations.filter((record)=>record.registrationSheetPurchased!==true);
-  setText("rangeRegistrations",registrations.length);setText("rangePayments",payments.length);setText("rangePending",pending.length);setText("rangePaymentCount",`${payments.length} ${payments.length===1?"pago":"pagos"}`);
+  const attendees=records.filter((record)=>recordAttended(record)&&inRange(record.meetingAttendedAt||record.registrationSheetPurchasedAt));
+  const payments=records.filter((record)=>recordAttended(record)&&record.registrationSheetPurchased===true&&inRange(record.registrationSheetPurchasedAt)).sort((a,b)=>(timestampToDate(b.registrationSheetPurchasedAt)?.getTime()||0)-(timestampToDate(a.registrationSheetPurchasedAt)?.getTime()||0));
+  const revenue=payments.reduce((sum,record)=>sum+recordPaymentAmount(record),0);
+  setText("rangeRegistrations",registrations.length);setText("rangeAttended",attendees.length);setText("rangePayments",payments.length);setText("rangeRevenue",formatMoney(revenue));setText("rangePaymentCount",`${payments.length} ${payments.length===1?"pago":"pagos"}`);
   const labelFormat=new Intl.DateTimeFormat("es-CO",{timeZone:"America/Bogota",day:"numeric",month:"short",year:"numeric"});setText("dateReportLabel",localDateInputValue(start)===localDateInputValue(end)?labelFormat.format(start):`${labelFormat.format(start)} – ${labelFormat.format(end)}`);
-  $("rangePaymentList").innerHTML=payments.length?payments.map((record)=>`<button class="range-payment-item" type="button" data-view-record="${escapeHTML(record.id)}"><span class="range-payment-status" aria-hidden="true">✓</span><span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor||"Sin asesor")} · ${escapeHTML(formatDate(record.registrationSheetPurchasedAt,true))}</small></span><span class="purchase-badge is-complete">Pagada</span></button>`).join(""):`<div class="range-payment-empty"><span aria-hidden="true">$</span><p>No hay pagos confirmados en estas fechas.</p></div>`;
+  $("rangePaymentList").innerHTML=payments.length?payments.map((record)=>`<button class="range-payment-item" type="button" data-view-record="${escapeHTML(record.id)}"><span class="range-payment-status" aria-hidden="true">✓</span><span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor||"Sin asesor")} · ${escapeHTML(formatDate(record.registrationSheetPurchasedAt,true))}</small></span><span class="purchase-badge is-complete">${escapeHTML(formatMoney(recordPaymentAmount(record)))}</span></button>`).join(""):`<div class="range-payment-empty"><span aria-hidden="true">$</span><p>No hay pagos confirmados en estas fechas.</p></div>`;
 }
 
 function renderDashboard() {
-  const today=localDateInputValue();const startToday=localDateFromInput(today);const weekAgo=localDateFromInput(shiftDateInput(today,-6));const counts={};
-  records.forEach((record)=>{const advisor=record.advisor||"Sin asesor";counts[advisor]=(counts[advisor]||0)+1;});
-  $("statTotal").textContent=records.length;$("statToday").textContent=records.filter((r)=>{const date=timestampToDate(r.createdAt);return date&&date>=startToday;}).length;$("statWeek").textContent=records.filter((r)=>{const date=timestampToDate(r.createdAt);return date&&date>=weekAgo;}).length;$("statAdvisors").textContent=Object.keys(counts).length;
+  const meetingRecords=records.filter((record)=>recordMeetingDate(record)===content.meetingDate);const attended=meetingRecords.filter(recordAttended);const paid=attended.filter((record)=>record.registrationSheetPurchased===true);const counts={};
+  meetingRecords.forEach((record)=>{const advisor=record.advisor||"Sin asesor";counts[advisor]=(counts[advisor]||0)+1;});
+  setText("dashboardMeetingBadge",meetingDateLabel(content.meetingDate));setText("statTotal",meetingRecords.length);setText("statPendingMeeting",meetingRecords.length-attended.length);setText("statAttended",attended.length);setText("statPaid",paid.length);setText("statRevenue",formatMoney(paid.reduce((sum,record)=>sum+recordPaymentAmount(record),0)));
   const entries=Object.entries(counts).sort((a,b)=>b[1]-a[1]);const max=Math.max(1,...entries.map(([,count])=>count));
   $("advisorBreakdown").innerHTML=entries.length?entries.map(([name,count])=>`<div class="advisor-row"><span title="${escapeHTML(name)}">${escapeHTML(name)}</span><div class="advisor-bar"><span style="width:${Math.max(4,(count/max)*100)}%"></span></div><strong>${count}</strong></div>`).join(""):`<div class="empty-state"><p>Aún no hay registros.</p></div>`;
-  $("recentRecords").innerHTML=records.slice(0,5).map((record)=>`<button class="recent-item" type="button" data-view-record="${escapeHTML(record.id)}">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor||"Sin asesor")}</small></span><time>${escapeHTML(formatDate(record.createdAt))}</time></button>`).join("")||`<div class="empty-state"><p>Aún no hay registros.</p></div>`;
+  $("recentRecords").innerHTML=meetingRecords.slice(0,5).map((record)=>`<button class="recent-item" type="button" data-view-record="${escapeHTML(record.id)}">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor||"Sin asesor")} · ${recordAttended(record)?(record.registrationSheetPurchased===true?"Asistió y pagó":"Asistió"):record.registrationSheetPurchased===true?"Pagó · sin asistencia":"Pendiente"}</small></span><time>${escapeHTML(formatDate(record.createdAt))}</time></button>`).join("")||`<div class="empty-state"><p>Aún no hay registros para esta reunión.</p></div>`;
 }
 
 function recordPhoto(record,className="") {
@@ -1142,42 +1295,81 @@ function recordPhoto(record,className="") {
 }
 
 function renderAdvisorFilter() {
-  const current=$("advisorFilter").value;const advisors=[...new Set(records.map((record)=>record.advisor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es"));
+  renderMeetingFilter("recordMeetingFilter");const current=$("advisorFilter").value;const advisors=[...new Set(records.map((record)=>record.advisor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es"));
   $("advisorFilter").innerHTML=`<option value="">Todos los asesores</option>${advisors.map((name)=>`<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join("")}`;if(advisors.includes(current))$("advisorFilter").value=current;
 }
 
 function renderRecords() {
-  const search=normalizeText($("recordSearch").value);const advisor=$("advisorFilter").value;
-  filteredRecords=records.filter((record)=>{const recruiter=recruiterContactFromRecord(record);const haystack=normalizeText(`${record.firstName} ${record.lastName} ${record.document} ${record.advisor} ${recruiter?.name||""} ${recruiter?.whatsapp||""}`);return(!search||haystack.includes(search))&&(!advisor||record.advisor===advisor);});
+  const search=normalizeText($("recordSearch").value);const meeting=$("recordMeetingFilter").value;const advisor=$("advisorFilter").value;const status=$("recordStatusFilter").value;
+  filteredRecords=records.filter((record)=>{const recruiter=recruiterContactFromRecord(record);const haystack=normalizeText(`${record.firstName} ${record.lastName} ${record.document} ${record.advisor} ${recruiter?.name||""} ${recruiter?.whatsapp||""}`);const attended=recordAttended(record);const paid=record.registrationSheetPurchased===true;const matchesStatus=!status||(status==="pending"?!attended:status==="attended"?attended&&!paid:paid);return(!search||haystack.includes(search))&&(!meeting||recordMeetingDate(record)===meeting)&&(!advisor||record.advisor===advisor)&&matchesStatus;});
   $("recordCountBadge").textContent=`${filteredRecords.length} ${filteredRecords.length===1?"registro":"registros"}`;$("recordsEmpty").hidden=filteredRecords.length>0;
-  $("recordsTableBody").innerHTML=filteredRecords.map((record)=>`<tr><td><div class="person-cell">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.document)}</small></span></div></td><td>${escapeHTML(record.age)}</td><td>${escapeHTML(record.gender)}</td><td>${escapeHTML(record.advisor)}</td><td><span class="team-badge">${escapeHTML(record.team||TEAM_NAME)}</span></td><td>${sheetPurchaseBadge(record)}</td><td>${escapeHTML(formatDate(record.createdAt,true))}</td><td><button class="table-action" type="button" data-view-record="${escapeHTML(record.id)}">Ver</button></td></tr>`).join("");
-  $("recordsMobile").innerHTML=filteredRecords.map((record)=>`<button class="mobile-record" type="button" data-view-record="${escapeHTML(record.id)}">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor)} · ${record.registrationSheetPurchased===true?"Hoja comprada":"Hoja pendiente"} · ${escapeHTML(formatDate(record.createdAt))}</small></span><span>›</span></button>`).join("");
+  $("recordsTableBody").innerHTML=filteredRecords.map((record)=>`<tr><td><div class="person-cell">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.document)}</small></span></div></td><td>${escapeHTML(record.advisor||"Sin asesor")}</td><td>${escapeHTML(meetingDateLabel(recordMeetingDate(record)))}</td><td>${workflowStatusBadge(record)}</td><td>${escapeHTML(formatDate(record.createdAt,true))}</td><td><div class="record-row-actions"><button class="table-action" type="button" data-view-record="${escapeHTML(record.id)}">Ver</button><button class="table-action is-danger" type="button" data-delete-record="${escapeHTML(record.id)}">Eliminar</button></div></td></tr>`).join("");
+  $("recordsMobile").innerHTML=filteredRecords.map((record)=>`<article class="mobile-record-card"><button class="mobile-record" type="button" data-view-record="${escapeHTML(record.id)}">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(record.advisor||"Sin asesor")} · ${escapeHTML(meetingDateLabel(recordMeetingDate(record)))}</small></span><span>›</span></button><div class="mobile-record-footer">${workflowStatusBadge(record)}<button class="table-action is-danger" type="button" data-delete-record="${escapeHTML(record.id)}">Eliminar registro</button></div></article>`).join("");
 }
 
 function renderPaymentAdvisorFilter() {
-  if(!$("paymentAdvisorFilter"))return;const current=$("paymentAdvisorFilter").value;const advisors=[...new Set(records.map((record)=>record.advisor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
+  if(!$("paymentAdvisorFilter"))return;renderMeetingFilter("paymentMeetingFilter");const current=$("paymentAdvisorFilter").value;const advisors=[...new Set(records.map((record)=>record.advisor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
   $("paymentAdvisorFilter").innerHTML=`<option value="">Todos los asesores</option>${advisors.map((name)=>`<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join("")}`;if(advisors.includes(current))$("paymentAdvisorFilter").value=current;
 }
 
-function paymentStatusBadge(record) { return record.registrationSheetPurchased===true?'<span class="payment-status is-paid">Pagada</span>':'<span class="payment-status is-pending">Pendiente</span>'; }
+function paymentStatusBadge(record) { return record.registrationSheetPurchased===true?'<span class="payment-status is-paid">Pagó $10.000</span>':'<span class="payment-status is-pending">Pendiente</span>'; }
 
 function renderPayments() {
   if(!$("paymentTableBody"))return;renderDateReport();renderPaymentAdvisorFilter();
-  const paid=records.filter((record)=>record.registrationSheetPurchased===true).length;const pending=records.length-paid;const rate=records.length?Math.round((paid/records.length)*100):0;
-  setText("paymentStatTotal",records.length);setText("paymentStatPaid",paid);setText("paymentStatPending",pending);setText("paymentStatRate",`${rate}%`);setText("paymentSectionBadge",`${paid} ${paid===1?"pago":"pagos"}`);
+  const meeting=$("paymentMeetingFilter").value;const scoped=records.filter(recordAttended).filter((record)=>!meeting||recordMeetingDate(record)===meeting);const paidRecords=scoped.filter((record)=>record.registrationSheetPurchased===true);const paid=paidRecords.length;const tickets=scoped.filter(recordTicketsReceived).length;const revenue=paidRecords.reduce((sum,record)=>sum+recordPaymentAmount(record),0);
+  setText("paymentStatTotal",scoped.length);setText("paymentStatPaid",paid);setText("paymentStatTickets",tickets);setText("paymentStatRevenue",formatMoney(revenue));setText("paymentSectionBadge",`${scoped.length} ${scoped.length===1?"asistente":"asistentes"}`);
 
-  const advisorTotals={};records.forEach((record)=>{const name=record.advisor||"Sin asesor";advisorTotals[name]||={total:0,paid:0};advisorTotals[name].total+=1;if(record.registrationSheetPurchased===true)advisorTotals[name].paid+=1;});
+  const advisorTotals={};scoped.forEach((record)=>{const name=record.advisor||"Sin asesor";advisorTotals[name]||={total:0,paid:0,tickets:0};advisorTotals[name].total+=1;if(record.registrationSheetPurchased===true)advisorTotals[name].paid+=1;if(recordTicketsReceived(record))advisorTotals[name].tickets+=1;});
   const advisorEntries=Object.entries(advisorTotals).sort((a,b)=>b[1].paid-a[1].paid||b[1].total-a[1].total||a[0].localeCompare(b[0],"es",{sensitivity:"base"}));setText("paymentAdvisorCount",`${advisorEntries.length} ${advisorEntries.length===1?"asesor":"asesores"}`);
-  $("paymentAdvisorSummary").innerHTML=advisorEntries.length?advisorEntries.map(([name,summary])=>{const percentage=summary.total?Math.round((summary.paid/summary.total)*100):0;return`<article class="payment-advisor-row"><div><strong title="${escapeHTML(name)}">${escapeHTML(name)}</strong><span>${summary.paid} de ${summary.total} pagaron</span></div><div class="payment-progress" aria-label="${percentage}% pagado"><span style="width:${percentage}%"></span></div><small>${percentage}%</small></article>`;}).join(""):`<div class="payment-empty-compact"><span>$</span><p>Aún no hay registros para resumir.</p></div>`;
+  $("paymentAdvisorSummary").innerHTML=advisorEntries.length?advisorEntries.map(([name,summary])=>{const percentage=summary.total?Math.round((summary.paid/summary.total)*100):0;return`<article class="payment-advisor-row"><div><strong title="${escapeHTML(name)}">${escapeHTML(name)}</strong><span>${summary.total} asistieron · ${summary.paid} pagaron · ${summary.tickets} con boletas</span></div><div class="payment-progress" aria-label="${percentage}% pagado"><span style="width:${percentage}%"></span></div><small>${percentage}%</small></article>`;}).join(""):`<div class="payment-empty-compact"><span>$</span><p>Aún no hay asistentes para resumir.</p></div>`;
   renderPaymentTable();
 }
 
 function renderPaymentTable() {
-  const search=normalizeText($("paymentSearch").value);const advisor=$("paymentAdvisorFilter").value;const status=$("paymentStatusFilter").value;
-  filteredPaymentRecords=records.filter((record)=>{const haystack=normalizeText(`${record.firstName} ${record.lastName} ${record.document} ${record.advisor}`);const paidRecord=record.registrationSheetPurchased===true;return(!search||haystack.includes(search))&&(!advisor||record.advisor===advisor)&&(!status||(status==="paid"?paidRecord:!paidRecord));});
+  const search=normalizeText($("paymentSearch").value);const meeting=$("paymentMeetingFilter").value;const advisor=$("paymentAdvisorFilter").value;const status=$("paymentStatusFilter").value;const tickets=$("paymentTicketsFilter").value;
+  filteredPaymentRecords=records.filter(recordAttended).filter((record)=>{const haystack=normalizeText(`${record.firstName} ${record.lastName} ${record.document} ${record.advisor}`);const paidRecord=record.registrationSheetPurchased===true;const ticketsRecord=recordTicketsReceived(record);return(!search||haystack.includes(search))&&(!meeting||recordMeetingDate(record)===meeting)&&(!advisor||record.advisor===advisor)&&(!status||(status==="paid"?paidRecord:!paidRecord))&&(!tickets||(tickets==="received"?ticketsRecord:!ticketsRecord));});
   setText("paymentRecordCount",`${filteredPaymentRecords.length} ${filteredPaymentRecords.length===1?"persona":"personas"}`);$("paymentEmpty").hidden=filteredPaymentRecords.length>0;
-  $("paymentTableBody").innerHTML=filteredPaymentRecords.map((record)=>{const purchased=record.registrationSheetPurchased===true;return`<tr><td><strong>${escapeHTML(record.firstName||"—")}</strong></td><td>${escapeHTML(record.lastName||"—")}</td><td>${escapeHTML(record.document||"—")}</td><td>${escapeHTML(record.advisor||"Sin asesor")}</td><td>${paymentStatusBadge(record)}</td><td>${purchased?escapeHTML(formatDate(record.registrationSheetPurchasedAt,true)):"—"}</td><td><div class="payment-row-actions">${purchased?"":`<button class="table-action payment-confirm-action" type="button" data-mark-sheet="${escapeHTML(record.id)}">Confirmar pago</button>`}<button class="table-action" type="button" data-view-record="${escapeHTML(record.id)}">Ver</button></div></td></tr>`;}).join("");
-  $("paymentRecordsMobile").innerHTML=filteredPaymentRecords.map((record)=>{const purchased=record.registrationSheetPurchased===true;return`<article class="payment-mobile-record"><div class="payment-mobile-heading"><div><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>Documento ${escapeHTML(record.document||"—")}</small></div>${paymentStatusBadge(record)}</div><dl><div><dt>Asesor</dt><dd>${escapeHTML(record.advisor||"Sin asesor")}</dd></div><div><dt>Fecha de pago</dt><dd>${purchased?escapeHTML(formatDate(record.registrationSheetPurchasedAt,true)):"Sin confirmar"}</dd></div></dl><div class="payment-mobile-actions">${purchased?"":`<button class="button button-primary" type="button" data-mark-sheet="${escapeHTML(record.id)}">Confirmar pago</button>`}<button class="button button-secondary" type="button" data-view-record="${escapeHTML(record.id)}">Ver registro</button></div></article>`;}).join("");
+  $("paymentTableBody").innerHTML=filteredPaymentRecords.map((record)=>{const purchased=record.registrationSheetPurchased===true;return`<tr><td><div class="person-cell compact-person-cell">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName||"—")} ${escapeHTML(record.lastName||"—")}</strong></span></div></td><td>${escapeHTML(record.document||"—")}</td><td>${escapeHTML(record.advisor||"Sin asesor")}</td><td>${escapeHTML(meetingDateLabel(recordMeetingDate(record)))}</td><td>${attendanceStatusBadge(record)}</td><td>${paymentStatusBadge(record)}</td><td>${ticketStatusBadge(record)}</td><td>${purchased?escapeHTML(formatDate(record.registrationSheetPurchasedAt,true)):"—"}</td><td><div class="payment-row-actions">${purchased?`<button class="table-action is-danger" type="button" data-delete-payment="${escapeHTML(record.id)}">Eliminar pago</button>`:`<button class="table-action payment-confirm-action" type="button" data-mark-sheet="${escapeHTML(record.id)}">Registrar $10.000</button>`}<button class="table-action" type="button" data-view-record="${escapeHTML(record.id)}">Ver</button></div></td></tr>`;}).join("");
+  $("paymentRecordsMobile").innerHTML=filteredPaymentRecords.map((record)=>{const purchased=record.registrationSheetPurchased===true;return`<article class="payment-mobile-record"><div class="payment-mobile-heading"><div><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>Documento ${escapeHTML(record.document||"—")}</small></div>${workflowStatusBadge(record)}</div><dl><div><dt>Asesor</dt><dd>${escapeHTML(record.advisor||"Sin asesor")}</dd></div><div><dt>Reunión</dt><dd>${escapeHTML(meetingDateLabel(recordMeetingDate(record)))}</dd></div><div><dt>Asistencia</dt><dd>Confirmada</dd></div><div><dt>Pago</dt><dd>${purchased?"Pagó $10.000":"Pendiente"}</dd></div><div><dt>Boletas</dt><dd>${recordTicketsReceived(record)?"Recibió":"No recibió"}</dd></div><div><dt>Fecha de pago</dt><dd>${purchased?escapeHTML(formatDate(record.registrationSheetPurchasedAt,true)):"Sin confirmar"}</dd></div></dl><div class="payment-mobile-actions">${purchased?`<button class="button button-danger" type="button" data-delete-payment="${escapeHTML(record.id)}">Eliminar pago</button>`:`<button class="button button-primary" type="button" data-mark-sheet="${escapeHTML(record.id)}">Registrar $10.000</button>`}<button class="button button-secondary" type="button" data-view-record="${escapeHTML(record.id)}">Ver registro</button></div></article>`;}).join("");
+}
+
+function renderTicketFilters() {
+  if(!$("ticketAdvisorFilter"))return;renderMeetingFilter("ticketMeetingFilter");const current=$("ticketAdvisorFilter").value;
+  const conveners=[...new Set(records.filter(recordTicketsReceived).map(recordConvener).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
+  $("ticketAdvisorFilter").innerHTML=`<option value="">Todos los convocantes</option>${conveners.map((name)=>`<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join("")}`;if(conveners.includes(current))$("ticketAdvisorFilter").value=current;
+}
+
+function renderTickets() {
+  if(!$("ticketTableBody"))return;renderTicketFilters();renderTicketTable();
+}
+
+function renderTicketSummary(scoped) {
+  const tourism=scoped.filter((record)=>record.ticketProgram==="Turismo");const half=scoped.filter((record)=>record.ticketProgram==="Mitad");
+  const tourismSold=tourism.reduce((sum,record)=>sum+recordTicketsSold(record),0);const halfSold=half.reduce((sum,record)=>sum+recordTicketsSold(record),0);const tourismProfit=tourismSold*TICKET_PROFIT_PER_SALE;const halfProfit=halfSold*TICKET_PROFIT_PER_SALE;const money=scoped.reduce((sum,record)=>sum+recordTicketMoney(record),0);
+  setText("ticketSectionBadge",`${scoped.length} ${scoped.length===1?"persona":"personas"}`);setText("ticketProfitTourism",formatMoney(tourismProfit));setText("ticketTourismSold",`${tourismSold} ${tourismSold===1?"boleta vendida":"boletas vendidas"}`);setText("ticketProfitHalf",formatMoney(halfProfit));setText("ticketHalfSold",`${halfSold} ${halfSold===1?"boleta vendida":"boletas vendidas"}`);setText("ticketProfitTotal",formatMoney(tourismProfit+halfProfit));setText("ticketMoneyDeliveredBadge",`${formatMoney(money)} entregado`);
+}
+
+function renderTicketTable() {
+  const search=normalizeText($("ticketSearch").value);const meeting=$("ticketMeetingFilter").value;const convener=$("ticketAdvisorFilter").value;const program=$("ticketProgramFilter").value;
+  filteredTicketRecords=records.filter(recordTicketsReceived).filter((record)=>{const owner=recordConvener(record);const haystack=normalizeText(`${record.firstName} ${record.lastName} ${record.whatsapp} ${owner}`);const recordProgram=String(record.ticketProgram||"");return(!search||haystack.includes(search))&&(!meeting||recordMeetingDate(record)===meeting)&&(!convener||owner===convener)&&(!program||(program==="pending"?!recordProgram:recordProgram===program));});
+  renderTicketSummary(filteredTicketRecords);setText("ticketRecordCount",`${filteredTicketRecords.length} ${filteredTicketRecords.length===1?"persona":"personas"}`);$("ticketsEmpty").hidden=filteredTicketRecords.length>0;
+  $("ticketTableBody").innerHTML=filteredTicketRecords.map((record)=>{const whatsapp=normalizedWhatsappTarget(record.whatsapp);return`<tr><td><div class="person-cell compact-person-cell">${recordPhoto(record)}<span><strong>${escapeHTML(record.firstName||"—")} ${escapeHTML(record.lastName||"—")}</strong></span></div></td><td>${whatsapp?`<a class="ticket-whatsapp-link" href="https://wa.me/${escapeHTML(whatsapp)}" target="_blank" rel="noopener">${escapeHTML(formatWhatsapp(record.whatsapp))}</a>`:"—"}</td><td>${escapeHTML(recordConvener(record))}</td><td>${ticketProgramBadge(record)}</td><td><strong>${recordTicketsSold(record)}</strong></td><td>${formatMoney(recordTicketMoney(record))}</td><td><strong class="ticket-profit-value">${formatMoney(recordTicketProfit(record))}</strong></td><td><button class="table-action payment-confirm-action" type="button" data-edit-ticket="${escapeHTML(record.id)}">Editar</button></td></tr>`;}).join("");
+  $("ticketRecordsMobile").innerHTML=filteredTicketRecords.map((record)=>{const whatsapp=normalizedWhatsappTarget(record.whatsapp);return`<article class="ticket-mobile-record"><div class="ticket-mobile-heading"><div><strong>${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</strong><small>${escapeHTML(recordConvener(record))}</small></div>${ticketProgramBadge(record)}</div><dl><div><dt>WhatsApp</dt><dd>${whatsapp?`<a href="https://wa.me/${escapeHTML(whatsapp)}" target="_blank" rel="noopener">${escapeHTML(formatWhatsapp(record.whatsapp))}</a>`:"—"}</dd></div><div><dt>Vendidas</dt><dd>${recordTicketsSold(record)}</dd></div><div><dt>Dinero entregado</dt><dd>${formatMoney(recordTicketMoney(record))}</dd></div><div><dt>Ganancia</dt><dd>${formatMoney(recordTicketProfit(record))}</dd></div></dl><button class="button button-primary" type="button" data-edit-ticket="${escapeHTML(record.id)}">Editar boletas</button></article>`;}).join("");
+}
+
+function openTicketEditor(id) {
+  const record=records.find((item)=>item.id===id);if(!record||!recordTicketsReceived(record))return;
+  $("ticketEditForm").reset();$("ticketEditError").textContent="";$("ticketEditId").value=id;$("ticketEditPerson").textContent=`${record.firstName} ${record.lastName} · Convocado por ${recordConvener(record)}`;$("ticketProgram").value=["Turismo","Mitad"].includes(record.ticketProgram)?record.ticketProgram:"";$("ticketSold").value=String(recordTicketsSold(record));$("ticketMoneyDelivered").value=String(recordTicketMoney(record));openModal("ticketEditModal");setTimeout(()=>$("ticketProgram").focus(),100);
+}
+
+async function saveTicketDetails(event) {
+  event.preventDefault();const id=$("ticketEditId").value;const record=records.find((item)=>item.id===id);if(!record||!recordTicketsReceived(record))return;
+  const program=$("ticketProgram").value;const sold=Number($("ticketSold").value);const money=Number($("ticketMoneyDelivered").value);const error=$("ticketEditError");error.textContent="";
+  if(!["Turismo","Mitad"].includes(program)){error.textContent="Selecciona Turismo o Mitad.";return;}if(!Number.isInteger(sold)||sold<0||sold>9999){error.textContent="Escribe una cantidad válida de boletas vendidas.";return;}if(!Number.isFinite(money)||money<0||money>999999999){error.textContent="Escribe un valor válido de dinero entregado.";return;}
+  const actor=IS_DEMO?($("adminUserEmail").textContent||"Administrador"):(auth.currentUser?.email||ADMIN_EMAIL);const updatedAt=new Date();setLoading(true,"Guardando control de boletas…");
+  try {if(!IS_DEMO)await db.collection("inscripciones_personal").doc(id).update({ticketProgram:program,ticketsSold:sold,ticketMoneyDelivered:money,ticketDetailsUpdatedAt:firebase.firestore.FieldValue.serverTimestamp(),ticketDetailsUpdatedBy:actor});Object.assign(record,{ticketProgram:program,ticketsSold:sold,ticketMoneyDelivered:money,ticketDetailsUpdatedAt:updatedAt,ticketDetailsUpdatedBy:actor});closeModal("ticketEditModal");renderAdminData();showToast("Control de boletas actualizado.");}
+  catch(saveError){console.error(saveError);error.textContent="No fue posible guardar los cambios.";showToast("No fue posible actualizar las boletas.");}
+  finally{setLoading(false);}
 }
 
 function recordAnswerItems(record) {
@@ -1186,8 +1378,8 @@ function recordAnswerItems(record) {
   const used=new Set();const items=[];
   const hasValue=(value)=>value!==undefined&&value!==null&&value!==""&&(!Array.isArray(value)||value.length>0);
   questions.forEach((question)=>{const value=values[question.id];used.add(question.id);if(hasValue(value))items.push({label:question.label,value});});
-  const labels={meetingConsent:"Asistencia a la reunión confirmada",privacyConsent:"Tratamiento de datos autorizado",recruiterName:"Reclutador asignado",recruiterWhatsapp:"WhatsApp del reclutador"};
-  Object.entries(values).forEach(([key,value])=>{if(used.has(key)||!hasValue(value))return;items.push({label:labels[key]||titleCase(key.replace(/[-_]+/g," ")),value});});
+  const labels={meetingConsent:"Compromiso de asistencia",meetingDate:"Reunión asignada",privacyConsent:"Tratamiento de datos autorizado",recruiterName:"Reclutador asignado",recruiterWhatsapp:"WhatsApp del reclutador"};
+  Object.entries(values).forEach(([key,value])=>{if(used.has(key)||!hasValue(value))return;items.push({label:labels[key]||titleCase(key.replace(/[-_]+/g," ")),value:key==="meetingDate"?meetingDateLabel(value):value});});
   return items;
 }
 
@@ -1200,8 +1392,8 @@ function displayRecordValue(value) {
 function showRecord(id) {
   const record=records.find((item)=>item.id===id);if(!record)return;
   const answerItems=recordAnswerItems(record);
-  const purchased=record.registrationSheetPurchased===true;const photo=safeImage(record.photoData);const purchaseDate=purchased?formatDate(record.registrationSheetPurchasedAt,true):"";const purchaseBy=String(record.registrationSheetPurchasedBy||"Administrador");
-  $("recordDetail").innerHTML=`<div class="record-profile">${photo?`<img src="${photo}" alt="Foto de ${escapeHTML(record.firstName)}">`:`<span class="avatar-placeholder">${escapeHTML(String(record.firstName||"L").charAt(0)+String(record.lastName||"E").charAt(0))}</span>`}<div><span class="eyebrow green-text">Registro ${escapeHTML(id.slice(0,8).toUpperCase())}</span><h2 id="recordModalTitle">${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</h2><div class="record-meta"><span>${escapeHTML(record.age)} años</span><span>${escapeHTML(record.gender)}</span><span>Asesor: ${escapeHTML(record.advisor)}</span><span>Equipo ${escapeHTML(record.team||TEAM_NAME)}</span>${sheetPurchaseBadge(record)}</div><p>Registrado: ${escapeHTML(formatDate(record.createdAt,true))}</p></div></div><div class="purchase-confirmation record-purchase${purchased?" is-complete":""}"><span class="purchase-confirmation-icon" aria-hidden="true">${purchased?"✓":"$"}</span><div><strong>${purchased?"Hoja de inscripción comprada":"Compra de la hoja pendiente"}</strong><p>${purchased?`Confirmada ${escapeHTML(purchaseDate)} por ${escapeHTML(purchaseBy)}.`:"Puedes confirmarla aquí o desde el escáner QR."}</p></div><button class="button ${purchased?"button-ghost":"button-primary"}" type="button" data-mark-sheet="${escapeHTML(record.id)}" ${purchased?"disabled":""}>${purchased?"Compra registrada":"Confirmar compra"}</button></div><dl class="record-answer-grid">${answerItems.map((item)=>`<div class="record-answer"><dt>${escapeHTML(item.label)}</dt><dd>${escapeHTML(displayRecordValue(item.value))}</dd></div>`).join("")}</dl><div class="record-delete"><button class="button button-danger" type="button" data-delete-record="${escapeHTML(record.id)}">Eliminar registro</button></div>`;
+  const purchased=record.registrationSheetPurchased===true;const attended=recordAttended(record);const photo=safeImage(record.photoData);const purchaseDate=purchased?formatDate(record.registrationSheetPurchasedAt,true):"";const purchaseBy=String(record.registrationSheetPurchasedBy||"Administrador");
+  $("recordDetail").innerHTML=`<div class="record-profile">${photo?`<img src="${photo}" alt="Foto de ${escapeHTML(record.firstName)}">`:`<span class="avatar-placeholder">${escapeHTML(String(record.firstName||"L").charAt(0)+String(record.lastName||"E").charAt(0))}</span>`}<div><span class="eyebrow green-text">Registro ${escapeHTML(id.slice(0,8).toUpperCase())}</span><h2 id="recordModalTitle">${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</h2><div class="record-meta"><span>${escapeHTML(record.age)} años</span><span>${escapeHTML(record.gender)}</span><span>Asesor: ${escapeHTML(record.advisor||"Sin asesor")}</span><span>Reunión: ${escapeHTML(meetingDateLabel(recordMeetingDate(record)))}</span>${workflowStatusBadge(record)}${ticketStatusBadge(record)}</div><p>Registrado: ${escapeHTML(formatDate(record.createdAt,true))}</p></div></div><div class="meeting-control-grid record-workflow-controls"><div class="attendance-confirmation${attended?" is-complete":""}"><span class="purchase-confirmation-icon" aria-hidden="true">${attended?"✓":"○"}</span><div><strong>${attended?"Asistencia confirmada":"Asistencia pendiente"}</strong><p>${attended?`Registrada ${escapeHTML(formatDate(record.meetingAttendedAt||record.registrationSheetPurchasedAt,true))}.`:"Confirma cuando la persona llegue a la reunión."}</p></div>${attended?"":`<button class="button button-secondary" type="button" data-mark-attendance="${escapeHTML(record.id)}">Confirmar asistencia</button>`}</div><div class="purchase-confirmation${purchased?" is-complete":""}"><span class="purchase-confirmation-icon" aria-hidden="true">${purchased?"✓":"$"}</span><div><strong>${purchased?"Pago de $10.000 confirmado":"Pago de $10.000 pendiente"}</strong><p>${purchased?`Registrado ${escapeHTML(purchaseDate)} por ${escapeHTML(purchaseBy)}.`:"Confirma el pago aquí o desde el escáner QR."}</p></div>${purchased?`<button class="button button-danger" type="button" data-delete-payment="${escapeHTML(record.id)}">Eliminar pago</button>`:`<button class="button button-primary" type="button" data-mark-sheet="${escapeHTML(record.id)}">Registrar $10.000</button>`}</div>${recordTicketsReceived(record)?`<div class="ticket-confirmation is-complete"><span class="purchase-confirmation-icon" aria-hidden="true">✓</span><div><strong>Boletas entregadas</strong><p>${record.ticketProgram?`${escapeHTML(record.ticketProgram)} · ${recordTicketsSold(record)} vendidas · ${escapeHTML(formatMoney(recordTicketMoney(record)))} entregado.`:"Completa modalidad, ventas y dinero entregado."}</p></div><button class="button button-secondary" type="button" data-edit-ticket="${escapeHTML(record.id)}">Editar boletas</button></div>`:""}</div><dl class="record-answer-grid">${answerItems.map((item)=>`<div class="record-answer"><dt>${escapeHTML(item.label)}</dt><dd>${escapeHTML(displayRecordValue(item.value))}</dd></div>`).join("")}</dl><div class="record-delete"><div><strong>Eliminar persona</strong><p>Borra el formulario, el carné, la asistencia, el pago y las boletas asociadas.</p></div><button class="button button-danger" type="button" data-delete-record="${escapeHTML(record.id)}">Eliminar registro completo</button></div>`;
   openModal("recordModal");
 }
 
@@ -1209,8 +1401,35 @@ async function deleteRecord(id) {
   const record=records.find((item)=>item.id===id);if(!record)return;
   const accepted=await confirmDialog(`¿Eliminar el registro de ${record.firstName} ${record.lastName}? Esta acción no se puede deshacer.`,{title:"Eliminar registro",acceptText:"Eliminar",danger:true});if(!accepted)return;
   setLoading(true,"Eliminando registro…");
-  try{if(IS_DEMO){records=records.filter((item)=>item.id!==id);renderAdminData();}else await db.collection("inscripciones_personal").doc(id).delete();closeModal("recordModal");showToast("Registro eliminado.");}
+  try{if(!IS_DEMO)await db.collection("inscripciones_personal").doc(id).delete();records=records.filter((item)=>item.id!==id);if(scannerRecordId===id){scannerRecordId="";scannerSelectionRecordId="";scannerSelections=new Set();$("scannerResult").innerHTML='<div class="scanner-result-empty"><span aria-hidden="true">⌕</span><h3>Registro eliminado</h3><p>Escanea otro código para continuar.</p></div>';}renderAdminData();closeModal("recordModal");showToast("Registro completo eliminado.");}
   catch(error){console.error(error);showToast("No se pudo eliminar el registro.");}finally{setLoading(false);}
+}
+
+function openBulkDeleteModal() {
+  if(!records.length){showToast("No hay registros para eliminar.");return;}
+  $("bulkDeleteForm").reset();setText("bulkDeleteRecordCount",records.length);setText("bulkDeleteError","");$("confirmBulkDeleteButton").disabled=true;openModal("bulkDeleteModal");setTimeout(()=>$("bulkDeletePhrase").focus(),100);
+}
+
+function updateBulkDeleteConfirmation() {
+  const input=$("bulkDeletePhrase");input.value=input.value.toLocaleUpperCase("es");const matches=input.value.trim()===BULK_DELETE_PHRASE;$("confirmBulkDeleteButton").disabled=!matches||bulkDeleteRunning;if(matches)setText("bulkDeleteError","");
+}
+
+async function deleteAllRecords(event) {
+  event.preventDefault();if(bulkDeleteRunning)return;
+  if($("bulkDeletePhrase").value.trim()!==BULK_DELETE_PHRASE){setText("bulkDeleteError",`Escribe exactamente ${BULK_DELETE_PHRASE} para continuar.`);return;}
+  bulkDeleteRunning=true;document.querySelectorAll("[data-delete-all-records]").forEach((button)=>{button.disabled=true;});$("confirmBulkDeleteButton").disabled=true;closeModal("bulkDeleteModal");setLoading(true,"Eliminando todos los registros…");
+  let deletedCount=0;
+  try {
+    if(IS_DEMO){deletedCount=records.length;}
+    else {
+      while(true){
+        const snapshot=await db.collection("inscripciones_personal").limit(400).get();if(snapshot.empty)break;
+        const batch=db.batch();snapshot.docs.forEach((document)=>batch.delete(document.ref));await batch.commit();deletedCount+=snapshot.size;setText("loadingText",`Eliminando registros… ${deletedCount} completados`);
+      }
+    }
+    records=[];filteredRecords=[];filteredPaymentRecords=[];filteredTicketRecords=[];scannerRecordId="";scannerSelectionRecordId="";scannerSelections=new Set();$("scannerResult").innerHTML='<div class="scanner-result-empty"><span aria-hidden="true">⌕</span><h3>No hay registros</h3><p>Todos los registros, asistencias, pagos y boletas fueron eliminados.</p></div>';setScannerStatus("Todos los registros fueron eliminados.");closeModal("recordModal");closeModal("ticketEditModal");renderAdminData();showToast(`${deletedCount} ${deletedCount===1?"registro eliminado":"registros eliminados"} correctamente.`);
+  } catch(error){console.error(error);renderAdminData();showToast(deletedCount?`Se eliminaron ${deletedCount} registros, pero no fue posible completar el proceso.`:"No fue posible eliminar los registros.");}
+  finally{bulkDeleteRunning=false;setLoading(false);renderAdminData();}
 }
 
 function confirmDialog(message,{title="Confirmar acción",acceptText="Confirmar",danger=false}={}) {
@@ -1221,10 +1440,10 @@ function resolveConfirm(value) { closeModal("confirmModal");confirmResolver?.(va
 
 function renderTeamConfiguration() {
   if(!$("advisorManagerList")||!$("invitationCodeList"))return;
-  const activeAdvisors=advisorProfiles.filter((advisor)=>advisor.active).length;const activeCodes=recruiterInviteCodes.filter((code)=>code.active).length;
-  const orderedAdvisors=[...advisorProfiles].sort((a,b)=>a.name.localeCompare(b.name,"es",{sensitivity:"base"}));const orderedCodes=[...recruiterInviteCodes].sort((a,b)=>b.createdAt-a.createdAt);
+  const directory=advisorDirectoryProfiles();const activeAdvisors=directory.filter((advisor)=>advisor.active).length;const activeCodes=recruiterInviteCodes.filter((code)=>code.active).length;
+  const orderedAdvisors=[...directory].sort((a,b)=>a.name.localeCompare(b.name,"es",{sensitivity:"base"}));const orderedCodes=[...recruiterInviteCodes].sort((a,b)=>b.createdAt-a.createdAt);
   setText("advisorManagerCount",`${activeAdvisors} ${activeAdvisors===1?"asesor activo":"asesores activos"}`);setText("invitationCodeCount",`${activeCodes} ${activeCodes===1?"código activo":"códigos activos"}`);
-  $("advisorManagerList").innerHTML=orderedAdvisors.map((advisor)=>{const initials=advisor.name.split(/\s+/).slice(0,2).map((part)=>part.charAt(0)).join("").toLocaleUpperCase("es");return`<article class="manager-row${advisor.active?"":" is-inactive"}"><span class="manager-avatar" aria-hidden="true">${escapeHTML(initials)}</span><div class="manager-info"><div><strong>${escapeHTML(advisor.name)}</strong><span class="mini-status ${advisor.active?"is-active":""}">${advisor.active?"Activo":"Inactivo"}</span></div><small class="${advisor.whatsapp?"":"is-warning"}">${advisor.whatsapp?`WhatsApp ${escapeHTML(formatWhatsapp(advisor.whatsapp))}`:"WhatsApp pendiente"}</small></div><div class="manager-actions"><button type="button" data-edit-advisor="${escapeHTML(advisor.id)}" title="Editar asesor">Editar</button><button class="delete" type="button" data-delete-advisor="${escapeHTML(advisor.id)}" title="Eliminar asesor">Eliminar</button></div></article>`;}).join("")||`<div class="manager-empty"><span>＋</span><strong>No hay asesores</strong><p>Agrega el primer perfil para habilitar el formulario.</p></div>`;
+  $("advisorManagerList").innerHTML=orderedAdvisors.map((advisor)=>{const initials=advisor.name.split(/\s+/).slice(0,2).map((part)=>part.charAt(0)).join("").toLocaleUpperCase("es");const origin=advisor.source==="self"?"Autoregistrado · ":"";return`<article class="manager-row${advisor.active?"":" is-inactive"}"><span class="manager-avatar" aria-hidden="true">${escapeHTML(initials)}</span><div class="manager-info"><div><strong>${escapeHTML(advisor.name)}</strong><span class="mini-status ${advisor.active?"is-active":""}">${advisor.active?"Activo":"Inactivo"}</span></div><small class="${advisor.whatsapp?"":"is-warning"}">${escapeHTML(origin)}${advisor.whatsapp?`WhatsApp ${escapeHTML(formatWhatsapp(advisor.whatsapp))}`:"WhatsApp pendiente"}</small></div><div class="manager-actions"><button type="button" data-edit-advisor="${escapeHTML(advisor.id)}" title="Editar asesor">Editar</button><button class="delete" type="button" data-delete-advisor="${escapeHTML(advisor.id)}" title="Eliminar asesor">Eliminar</button></div></article>`;}).join("")||`<div class="manager-empty"><span>＋</span><strong>No hay asesores</strong><p>Agrega el primer perfil para habilitar el formulario.</p></div>`;
   $("invitationCodeList").innerHTML=orderedCodes.map((code)=>`<article class="manager-row code-row${code.active?"":" is-inactive"}"><span class="manager-avatar code-avatar" aria-hidden="true">#</span><div class="manager-info"><div><strong>${escapeHTML(code.label)}</strong><span class="mini-status ${code.active?"is-active":""}">${code.active?"Activo":"Inactivo"}</span></div><small>Código protegido · termina en ${escapeHTML(code.lastFour||"••••")}</small></div><div class="manager-actions"><button type="button" data-edit-invitation="${escapeHTML(code.id)}" title="Editar código">Editar</button><button class="delete" type="button" data-delete-invitation="${escapeHTML(code.id)}" title="Eliminar código">Eliminar</button></div></article>`).join("")||`<div class="manager-empty"><span>#</span><strong>Aún no hay códigos</strong><p>Crea uno para autorizar el acceso de reclutadores.</p></div>`;
   $("invitationCodeReveal").hidden=!latestInvitationCodeReveal;if(latestInvitationCodeReveal)setText("revealedInvitationCode",latestInvitationCodeReveal);
 }
@@ -1234,30 +1453,38 @@ async function persistTeamConfiguration(message="Configuración guardada.") {
   if(IS_DEMO){showToast(message);return;}
   setText("teamConfigurationStatus","Guardando…");setLoading(true,"Guardando equipo y accesos…");
   try{
-    await db.collection("configuracion").doc("formulario_inscripcion").set({advisors:advisorProfiles.map((advisor)=>({...advisor})),recruiterInviteCodes:recruiterInviteCodes.map((code)=>({...code})),questions:questions.map(questionForStorage),updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:auth.currentUser.email},{merge:true});
+    await db.collection("configuracion").doc("formulario_inscripcion").set({advisors:advisorProfiles.map((advisor)=>({...advisor})),recruiterInviteCodes:recruiterInviteCodes.map((code)=>({...code})),activeRecruiterInviteHashes:recruiterInviteCodes.filter((code)=>code.active).map((code)=>code.hash),questions:questions.map(questionForStorage),updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:auth.currentUser.email},{merge:true});
     setText("teamConfigurationStatus","Configuración sincronizada");showToast(message);
   }catch(error){console.error(error);setText("teamConfigurationStatus","No se pudo sincronizar");showToast("No se pudieron guardar los cambios.");}
   finally{setLoading(false);}
 }
 
 function openAdvisorEditor(id="") {
-  const advisor=advisorProfiles.find((item)=>item.id===id);$("advisorForm").reset();$("advisorFormError").textContent="";$("advisorEditId").value=advisor?.id||"";$("advisorModalTitle").textContent=advisor?"Editar asesor":"Agregar asesor";$("advisorName").value=advisor?.name||"";$("advisorWhatsapp").value=advisor?.whatsapp||"";$("advisorActive").checked=advisor?advisor.active:true;openModal("advisorModal");setTimeout(()=>$("advisorName").focus(),100);
+  const advisor=findAdvisorProfile(id);$("advisorForm").reset();$("advisorFormError").textContent="";$("advisorEditId").value=advisor?.id||"";$("advisorModalTitle").textContent=advisor?"Editar asesor":"Agregar asesor";$("advisorName").value=advisor?.name||"";$("advisorWhatsapp").value=advisor?.whatsapp||"";$("advisorActive").checked=advisor?advisor.active:true;openModal("advisorModal");setTimeout(()=>$("advisorName").focus(),100);
 }
 
 async function saveAdvisor(event) {
   event.preventDefault();const formNode=$("advisorForm");$("advisorFormError").textContent="";if(!formNode.reportValidity())return;
-  const id=$("advisorEditId").value;const existing=advisorProfiles.find((advisor)=>advisor.id===id);const next=normalizeAdvisorProfile({id:existing?.id||createLocalId("advisor"),name:$("advisorName").value,whatsapp:$("advisorWhatsapp").value,active:$("advisorActive").checked});
+  const id=$("advisorEditId").value;const existing=findAdvisorProfile(id);const next=normalizeAdvisorProfile({id:existing?.id||createLocalId("advisor"),name:$("advisorName").value,whatsapp:$("advisorWhatsapp").value,active:$("advisorActive").checked});const directory=advisorDirectoryProfiles();
   if(!next.name||!next.whatsapp){$("advisorFormError").textContent="Escribe un nombre y un WhatsApp colombiano válido de 10 dígitos.";return;}
-  if(advisorProfiles.some((advisor)=>advisor.id!==id&&normalizeText(advisor.name)===normalizeText(next.name))){$("advisorFormError").textContent="Ya existe un asesor con ese nombre.";return;}
-  if(!next.active&&existing?.active&&advisorProfiles.filter((advisor)=>advisor.active).length===1){$("advisorFormError").textContent="Debe permanecer al menos un asesor activo.";return;}
+  if(directory.some((advisor)=>advisor.id!==id&&normalizeText(advisor.name)===normalizeText(next.name))){$("advisorFormError").textContent="Ya existe un asesor con ese nombre.";return;}
+  if(directory.some((advisor)=>advisor.id!==id&&advisor.whatsapp===next.whatsapp)){$("advisorFormError").textContent="Ese WhatsApp ya pertenece a otro asesor.";return;}
+  if(!next.active&&existing?.active&&directory.filter((advisor)=>advisor.active).length===1){$("advisorFormError").textContent="Debe permanecer al menos un asesor activo.";return;}
+  if(existing?.source==="self"){
+    closeModal("advisorModal");setLoading(true,"Actualizando asesor…");
+    try{const parts=next.name.split(/\s+/);const data={firstName:parts.shift()||next.name,lastName:parts.join(" "),name:next.name,whatsapp:next.whatsapp,active:next.active,updatedAt:IS_DEMO?new Date():firebase.firestore.FieldValue.serverTimestamp(),updatedBy:IS_DEMO?"admin@demo.local":auth.currentUser.email};if(!IS_DEMO)await db.collection("asesores_reclutadores").doc(existing.documentId).update(data);Object.assign(existing,next,data);syncAdvisorQuestionOptions();renderAllQuestions(true);renderTeamConfiguration();showToast("Asesor actualizado.");}catch(error){console.error(error);showToast("No se pudo actualizar el asesor.");}finally{setLoading(false);}return;
+  }
   if(existing)advisorProfiles[advisorProfiles.findIndex((advisor)=>advisor.id===id)]=next;else advisorProfiles.push(next);
   closeModal("advisorModal");await persistTeamConfiguration(existing?"Asesor actualizado.":"Asesor agregado.");
 }
 
 async function deleteAdvisor(id) {
-  const advisor=advisorProfiles.find((item)=>item.id===id);if(!advisor)return;
-  if(advisor.active&&advisorProfiles.filter((item)=>item.active).length===1){showToast("Debe permanecer al menos un asesor activo.");return;}
+  const advisor=findAdvisorProfile(id);if(!advisor)return;
+  if(advisor.active&&advisorDirectoryProfiles().filter((item)=>item.active).length===1){showToast("Debe permanecer al menos un asesor activo.");return;}
   if(!await confirmDialog(`¿Eliminar a ${advisor.name} del directorio? Los registros anteriores conservarán su nombre.`,{title:"Eliminar asesor",acceptText:"Eliminar",danger:true}))return;
+  if(advisor.source==="self"){
+    setLoading(true,"Eliminando asesor…");try{if(!IS_DEMO)await db.collection("asesores_reclutadores").doc(advisor.documentId).delete();selfRegisteredAdvisorProfiles=selfRegisteredAdvisorProfiles.filter((item)=>item.id!==id);syncAdvisorQuestionOptions();renderAllQuestions(true);renderTeamConfiguration();showToast("Asesor eliminado.");}catch(error){console.error(error);showToast("No se pudo eliminar el asesor.");}finally{setLoading(false);}return;
+  }
   advisorProfiles=advisorProfiles.filter((item)=>item.id!==id);await persistTeamConfiguration("Asesor eliminado.");
 }
 
@@ -1299,7 +1526,7 @@ function showAdminTab(name) {
   if(name!=="scanner")stopQrScanner();
   document.querySelectorAll("[data-admin-tab]").forEach((button)=>button.classList.toggle("is-active",button.dataset.adminTab===name));
   document.querySelectorAll("[data-admin-panel]").forEach((panel)=>{const active=panel.dataset.adminPanel===name;panel.hidden=!active;panel.classList.toggle("is-active",active);});
-  if(name==="records")renderRecords();if(name==="payments")renderPayments();if(name==="settings")showSettingsTab(activeSettingsTab);
+  if(name==="records")renderRecords();if(name==="payments")renderPayments();if(name==="tickets")renderTickets();if(name==="settings")showSettingsTab(activeSettingsTab);
 }
 
 function renderQuestionEditor() {
@@ -1385,13 +1612,20 @@ function attachEvents() {
   document.querySelectorAll("[data-admin-tab]").forEach((button)=>button.addEventListener("click",()=>showAdminTab(button.dataset.adminTab)));document.querySelectorAll("[data-settings-tab]").forEach((button)=>button.addEventListener("click",()=>showSettingsTab(button.dataset.settingsTab)));document.querySelectorAll("[data-go-records]").forEach((button)=>button.addEventListener("click",()=>showAdminTab("records")));
   $("startQrScannerButton").addEventListener("click",startQrScanner);$("stopQrScannerButton").addEventListener("click",()=>{stopQrScanner();setScannerStatus("Cámara detenida.");});$("qrScannerImageInput").addEventListener("change",scanQrImage);
   $("scannerManualForm").addEventListener("submit",async(event)=>{event.preventDefault();stopQrScanner();await findScannerRecord($("scannerManualInput").value);});
-  $("recordSearch").addEventListener("input",renderRecords);$("advisorFilter").addEventListener("change",renderRecords);$("paymentSearch").addEventListener("input",renderPaymentTable);$("paymentAdvisorFilter").addEventListener("change",renderPaymentTable);$("paymentStatusFilter").addEventListener("change",renderPaymentTable);$("dateReportForm").addEventListener("submit",(event)=>{event.preventDefault();renderDateReport();});$("reportTodayButton").addEventListener("click",()=>setDateReportRange(1));$("reportWeekButton").addEventListener("click",()=>setDateReportRange(7));$("contentForm").addEventListener("submit",saveContent);$("restoreDefaultContentButton").addEventListener("click",restoreDefaultContent);$("addQuestionButton").addEventListener("click",()=>openQuestionEditor());$("questionType").addEventListener("change",toggleQuestionOptions);$("questionForm").addEventListener("submit",saveQuestion);
+  $("recordSearch").addEventListener("input",renderRecords);$("recordMeetingFilter").addEventListener("change",renderRecords);$("advisorFilter").addEventListener("change",renderRecords);$("recordStatusFilter").addEventListener("change",renderRecords);$("paymentSearch").addEventListener("input",renderPaymentTable);$("paymentMeetingFilter").addEventListener("change",renderPayments);$("paymentAdvisorFilter").addEventListener("change",renderPaymentTable);$("paymentStatusFilter").addEventListener("change",renderPaymentTable);$("paymentTicketsFilter").addEventListener("change",renderPaymentTable);$("ticketSearch").addEventListener("input",renderTicketTable);$("ticketMeetingFilter").addEventListener("change",renderTickets);$("ticketAdvisorFilter").addEventListener("change",renderTicketTable);$("ticketProgramFilter").addEventListener("change",renderTicketTable);$("ticketEditForm").addEventListener("submit",saveTicketDetails);$("dateReportForm").addEventListener("submit",(event)=>{event.preventDefault();renderDateReport();});$("reportTodayButton").addEventListener("click",()=>setDateReportRange(1));$("reportWeekButton").addEventListener("click",()=>setDateReportRange(7));$("contentForm").addEventListener("submit",saveContent);$("restoreDefaultContentButton").addEventListener("click",restoreDefaultContent);$("addQuestionButton").addEventListener("click",()=>openQuestionEditor());$("questionType").addEventListener("change",toggleQuestionOptions);$("questionForm").addEventListener("submit",saveQuestion);
+  $("bulkDeletePhrase").addEventListener("input",updateBulkDeleteConfirmation);$("bulkDeleteForm").addEventListener("submit",deleteAllRecords);
   $("addAdvisorButton").addEventListener("click",()=>openAdvisorEditor());$("advisorForm").addEventListener("submit",saveAdvisor);$("advisorWhatsapp").addEventListener("input",(event)=>{event.target.value=event.target.value.replace(/\D/g,"");});$("addInvitationCodeButton").addEventListener("click",()=>openInvitationCodeEditor());$("invitationCodeForm").addEventListener("submit",saveInvitationCode);$("generateInvitationCodeButton").addEventListener("click",fillGeneratedInvitationCode);$("invitationCodeValue").addEventListener("input",(event)=>{event.target.value=normalizeInvitationCode(event.target.value);});$("copyInvitationCodeButton").addEventListener("click",copyRevealedInvitationCode);
   document.addEventListener("click",(event)=>{
     const close=event.target.closest("[data-close-modal]");if(close)closeModal(close.dataset.closeModal);
     const view=event.target.closest("[data-view-record]");if(view)showRecord(view.dataset.viewRecord);
+    const markAttendance=event.target.closest("[data-mark-attendance]");if(markAttendance&&!markAttendance.disabled)markMeetingAttendance(markAttendance.dataset.markAttendance);
     const markSheet=event.target.closest("[data-mark-sheet]");if(markSheet&&!markSheet.disabled)markRegistrationSheetPurchased(markSheet.dataset.markSheet);
+    const scannerStatus=event.target.closest("[data-scanner-status]");if(scannerStatus&&!scannerStatus.disabled)toggleScannerSelection(scannerStatus.dataset.recordId,scannerStatus.dataset.scannerStatus);
+    const saveScannerStatus=event.target.closest("[data-save-scanner-status]");if(saveScannerStatus&&!saveScannerStatus.disabled)saveScannerSelections(saveScannerStatus.dataset.saveScannerStatus);
+    const removePayment=event.target.closest("[data-delete-payment]");if(removePayment)deleteRegistrationPayment(removePayment.dataset.deletePayment);
+    const editTicket=event.target.closest("[data-edit-ticket]");if(editTicket)openTicketEditor(editTicket.dataset.editTicket);
     const removeRecord=event.target.closest("[data-delete-record]");if(removeRecord)deleteRecord(removeRecord.dataset.deleteRecord);
+    const removeAllRecords=event.target.closest("[data-delete-all-records]");if(removeAllRecords&&!removeAllRecords.disabled)openBulkDeleteModal();
     const edit=event.target.closest("[data-edit-question]");if(edit)openQuestionEditor(edit.dataset.editQuestion);
     const move=event.target.closest("[data-move-question]");if(move)moveQuestion(move.dataset.questionId,move.dataset.moveQuestion);
     const removeQuestion=event.target.closest("[data-delete-question]");if(removeQuestion)deleteQuestion(removeQuestion.dataset.deleteQuestion);
