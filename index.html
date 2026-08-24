@@ -154,9 +154,9 @@
         </section>
 
         <section class="admin-panel" data-admin-panel="payments" hidden>
-          <div class="admin-section-heading"><div><span class="eyebrow green-text">Solo asistentes confirmados</span><h2>Control de pagos</h2><p>Aquí aparecen únicamente las personas marcadas como “Asistió” al leer su QR.</p></div><div class="heading-actions"><span id="paymentSectionBadge" class="count-badge">0 asistentes</span><button class="button button-danger button-compact bulk-delete-trigger" type="button" data-delete-all-records>Eliminar todos los registros</button></div></div>
+          <div class="admin-section-heading"><div><span class="eyebrow green-text">Historial de asistentes</span><h2>Control de pagos</h2><p>Aquí aparecen todas las personas con asistencia confirmada, hayan pagado la inscripción o tengan el pago pendiente.</p></div><div class="heading-actions"><span id="paymentSectionBadge" class="count-badge">0 asistentes</span><button class="button button-danger button-compact bulk-delete-trigger" type="button" data-delete-all-records>Eliminar todos los registros</button></div></div>
           <div class="payment-stats-grid">
-            <article class="payment-stat-card"><span>Asistieron</span><strong id="paymentStatTotal">0</strong><small>En la reunión seleccionada</small></article>
+            <article class="payment-stat-card"><span>Asistieron</span><strong id="paymentStatTotal">0</strong><small>Según el filtro de reunión</small></article>
             <article class="payment-stat-card is-paid"><span>Pagaron $10.000</span><strong id="paymentStatPaid">0</strong><small>Pagos confirmados</small></article>
             <article class="payment-stat-card"><span>Recibieron boletas</span><strong id="paymentStatTickets">0</strong><small>Entrega confirmada</small></article>
             <article class="payment-stat-card revenue-stat"><span>Dinero recibido</span><strong id="paymentStatRevenue">$0</strong><small>Total recaudado</small></article>
@@ -203,7 +203,7 @@
         </section>
 
         <section class="admin-panel" data-admin-panel="tickets" hidden>
-          <div class="admin-section-heading"><div><span class="eyebrow green-text">Control de boletas entregadas</span><h2>Boletas</h2><p>Solo aparecen las personas marcadas con “Boletas” al leer su código QR.</p></div><span id="ticketSectionBadge" class="count-badge">0 personas</span></div>
+          <div class="admin-section-heading"><div><span class="eyebrow green-text">Historial de boletas entregadas</span><h2>Boletas</h2><p>Aparecen todas las personas marcadas con “Boletas”, sin importar la fecha ni la reunión.</p></div><span id="ticketSectionBadge" class="count-badge">0 personas</span></div>
           <div class="ticket-profit-grid">
             <article class="ticket-profit-card"><span>Ganancia Turismo</span><strong id="ticketProfitTourism">$0</strong><small id="ticketTourismSold">0 boletas vendidas</small></article>
             <article class="ticket-profit-card"><span>Ganancia Mitad</span><strong id="ticketProfitHalf">$0</strong><small id="ticketHalfSold">0 boletas vendidas</small></article>
@@ -252,7 +252,12 @@
         </section>
 
         <section class="admin-panel" data-admin-panel="records" hidden>
-          <div class="admin-section-heading"><div><span class="eyebrow green-text">Lunes a viernes</span><h2>Registros de aspirantes</h2><p>Personas que completaron el formulario antes de la reunión.</p></div><div class="heading-actions"><span id="recordCountBadge" class="count-badge">0 registros</span><button class="button button-danger button-compact bulk-delete-trigger" type="button" data-delete-all-records>Eliminar todos los registros</button></div></div>
+          <div class="admin-section-heading"><div><span class="eyebrow green-text">Historial completo</span><h2>Registros de aspirantes</h2><p>Todas las personas que completaron el formulario, sin importar el día ni la reunión asignada.</p></div><div class="heading-actions"><span id="recordCountBadge" class="count-badge">0 registros</span><button class="button button-danger button-compact bulk-delete-trigger" type="button" data-delete-all-records>Eliminar todos los registros</button></div></div>
+          <div class="records-date-delete" role="group" aria-labelledby="recordDeleteDateTitle">
+            <div class="records-date-delete-copy"><strong id="recordDeleteDateTitle">Eliminar registros por fecha</strong><small id="recordDeleteDateSummary">Selecciona la fecha exacta en que fueron registrados.</small></div>
+            <label><span>Fecha de registro</span><input id="recordDeleteDate" type="date" aria-describedby="recordDeleteDateSummary"></label>
+            <button id="deleteRecordsByDateButton" class="button button-danger button-compact" type="button" disabled>Eliminar por fecha</button>
+          </div>
           <div class="filter-bar records-filter-bar"><label class="search-field"><span>⌕</span><input type="search" id="recordSearch" placeholder="Buscar nombre o documento…"></label><select id="recordMeetingFilter" aria-label="Filtrar registros por reunión"><option value="">Todas las reuniones</option></select><select id="advisorFilter"><option value="">Todos los asesores</option></select><select id="recordStatusFilter" aria-label="Filtrar por estado"><option value="">Todos los estados</option><option value="pending">Pendiente de reunión</option><option value="attended">Asistió, pago pendiente</option><option value="paid">Asistió y pagó</option></select></div>
           <div id="recordsMobile" class="records-mobile"></div>
           <div class="table-wrap"><table class="records-table registrations-table"><thead><tr><th>Persona</th><th>Asesor</th><th>Reunión</th><th>Estado</th><th>Fecha de registro</th><th></th></tr></thead><tbody id="recordsTableBody"></tbody></table></div>

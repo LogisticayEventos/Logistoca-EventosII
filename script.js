@@ -165,6 +165,7 @@ let recruiterSetupMode = false;
 let activeSettingsTab = "team";
 let latestInvitationCodeReveal = "";
 let bulkDeleteRunning = false;
+let dateDeleteRunning = false;
 let photoState = { image: null, zoom: 1, panX: 0, panY: 0, dragging: false, pointerX: 0, pointerY: 0 };
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -1034,7 +1035,7 @@ function loadAdminRecords() {
   if(IS_DEMO){renderAdminData();return Promise.resolve();}
   return new Promise((resolve,reject)=>{
     recordsUnsubscribe?.();let first=true;
-    recordsUnsubscribe=db.collection("inscripciones_personal").orderBy("createdAt","desc").limit(1000).onSnapshot((snapshot)=>{
+    recordsUnsubscribe=db.collection("inscripciones_personal").orderBy("createdAt","desc").onSnapshot((snapshot)=>{
       records=snapshot.docs.map((doc)=>({id:doc.id,...doc.data()}));renderAdminData();if(first){first=false;resolve();}
     },(error)=>{if(first)reject(error);else showToast("Se perdió la actualización en tiempo real.");});
   });
@@ -1057,6 +1058,7 @@ function renderAdminData() {
   const attended=records.filter((record)=>recordMeetingDate(record)===content.meetingDate&&recordAttended(record)).length;
   $("meetingAttendanceCount").textContent=`${attended} ${attended===1?"asistente":"asistentes"}`;
   document.querySelectorAll("[data-delete-all-records]").forEach((button)=>{button.disabled=records.length===0||bulkDeleteRunning;button.title=records.length?"Elimina definitivamente todos los registros, asistencias y pagos":"No hay registros para eliminar";});
+  updateRecordDateDeleteControl();
   if(scannerRecordId){const record=records.find((item)=>item.id===scannerRecordId);if(record)renderScannerRecord(record);}
 }
 
@@ -1215,6 +1217,20 @@ async function markRegistrationSheetPurchased(id) {
   finally{setLoading(false);}
 }
 
+async function markTicketsReceived(id) {
+  const record=records.find((item)=>item.id===id);if(!record)return;
+  if(recordTicketsReceived(record)){showToast("La entrega de boletas ya estaba registrada.");return;}
+  const accepted=await confirmDialog(`¿Confirmas que ${record.firstName} ${record.lastName} recibió boletas?`,{title:"Registrar entrega de boletas",acceptText:"Sí, registrar boletas"});if(!accepted)return;
+  setLoading(true,"Registrando entrega de boletas…");
+  try {
+    const receivedAt=new Date();const receivedBy=IS_DEMO?($("adminUserEmail").textContent||"Administrador"):(auth.currentUser?.email||ADMIN_EMAIL);
+    if(!IS_DEMO)await db.collection("inscripciones_personal").doc(id).update({ticketsReceived:true,ticketsReceivedAt:firebase.firestore.FieldValue.serverTimestamp(),ticketsReceivedBy:receivedBy});
+    Object.assign(record,{ticketsReceived:true,ticketsReceivedAt:receivedAt,ticketsReceivedBy:receivedBy});renderAdminData();
+    if(!$("recordModal").hidden)showRecord(id);showToast("Entrega de boletas registrada.");setScannerStatus("Boletas agregadas al registro.","success");
+  } catch(error){console.error(error);showToast("No se pudo registrar la entrega de boletas.");setScannerStatus("No fue posible guardar la entrega de boletas.","error");}
+  finally{setLoading(false);}
+}
+
 async function deleteRegistrationPayment(id) {
   const record=records.find((item)=>item.id===id);if(!record||record.registrationSheetPurchased!==true)return;
   const accepted=await confirmDialog(`¿Eliminar el pago de $10.000 de ${record.firstName} ${record.lastName}? El registro se conservará.`,{title:"Eliminar pago",acceptText:"Sí, eliminar pago",danger:true});if(!accepted)return;
@@ -1232,6 +1248,10 @@ async function deleteRegistrationPayment(id) {
 function localDateInputValue(date=new Date()) {
   const parts=Object.fromEntries(new Intl.DateTimeFormat("en-CA",{timeZone:"America/Bogota",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(date).filter((part)=>part.type!=="literal").map((part)=>[part.type,part.value]));
   return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function recordRegistrationDate(record={}) {
+  const created=timestampToDate(record.createdAt);return created?localDateInputValue(created):"";
 }
 
 function localDateFromInput(value,endOfDay=false) {
@@ -1295,7 +1315,7 @@ function recordPhoto(record,className="") {
 }
 
 function renderAdvisorFilter() {
-  renderMeetingFilter("recordMeetingFilter");const current=$("advisorFilter").value;const advisors=[...new Set(records.map((record)=>record.advisor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es"));
+  renderMeetingFilter("recordMeetingFilter",{defaultCurrent:false});const current=$("advisorFilter").value;const advisors=[...new Set(records.map((record)=>record.advisor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es"));
   $("advisorFilter").innerHTML=`<option value="">Todos los asesores</option>${advisors.map((name)=>`<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join("")}`;if(advisors.includes(current))$("advisorFilter").value=current;
 }
 
@@ -1308,7 +1328,7 @@ function renderRecords() {
 }
 
 function renderPaymentAdvisorFilter() {
-  if(!$("paymentAdvisorFilter"))return;renderMeetingFilter("paymentMeetingFilter");const current=$("paymentAdvisorFilter").value;const advisors=[...new Set(records.map((record)=>record.advisor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
+  if(!$("paymentAdvisorFilter"))return;renderMeetingFilter("paymentMeetingFilter",{defaultCurrent:false});const current=$("paymentAdvisorFilter").value;const advisors=[...new Set(records.map((record)=>record.advisor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
   $("paymentAdvisorFilter").innerHTML=`<option value="">Todos los asesores</option>${advisors.map((name)=>`<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join("")}`;if(advisors.includes(current))$("paymentAdvisorFilter").value=current;
 }
 
@@ -1334,7 +1354,7 @@ function renderPaymentTable() {
 }
 
 function renderTicketFilters() {
-  if(!$("ticketAdvisorFilter"))return;renderMeetingFilter("ticketMeetingFilter");const current=$("ticketAdvisorFilter").value;
+  if(!$("ticketAdvisorFilter"))return;renderMeetingFilter("ticketMeetingFilter",{defaultCurrent:false});const current=$("ticketAdvisorFilter").value;
   const conveners=[...new Set(records.filter(recordTicketsReceived).map(recordConvener).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
   $("ticketAdvisorFilter").innerHTML=`<option value="">Todos los convocantes</option>${conveners.map((name)=>`<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join("")}`;if(conveners.includes(current))$("ticketAdvisorFilter").value=current;
 }
@@ -1367,7 +1387,7 @@ async function saveTicketDetails(event) {
   const program=$("ticketProgram").value;const sold=Number($("ticketSold").value);const money=Number($("ticketMoneyDelivered").value);const error=$("ticketEditError");error.textContent="";
   if(!["Turismo","Mitad"].includes(program)){error.textContent="Selecciona Turismo o Mitad.";return;}if(!Number.isInteger(sold)||sold<0||sold>9999){error.textContent="Escribe una cantidad válida de boletas vendidas.";return;}if(!Number.isFinite(money)||money<0||money>999999999){error.textContent="Escribe un valor válido de dinero entregado.";return;}
   const actor=IS_DEMO?($("adminUserEmail").textContent||"Administrador"):(auth.currentUser?.email||ADMIN_EMAIL);const updatedAt=new Date();setLoading(true,"Guardando control de boletas…");
-  try {if(!IS_DEMO)await db.collection("inscripciones_personal").doc(id).update({ticketProgram:program,ticketsSold:sold,ticketMoneyDelivered:money,ticketDetailsUpdatedAt:firebase.firestore.FieldValue.serverTimestamp(),ticketDetailsUpdatedBy:actor});Object.assign(record,{ticketProgram:program,ticketsSold:sold,ticketMoneyDelivered:money,ticketDetailsUpdatedAt:updatedAt,ticketDetailsUpdatedBy:actor});closeModal("ticketEditModal");renderAdminData();showToast("Control de boletas actualizado.");}
+  try {if(!IS_DEMO)await db.collection("inscripciones_personal").doc(id).update({ticketProgram:program,ticketsSold:sold,ticketMoneyDelivered:money,ticketDetailsUpdatedAt:firebase.firestore.FieldValue.serverTimestamp(),ticketDetailsUpdatedBy:actor});Object.assign(record,{ticketProgram:program,ticketsSold:sold,ticketMoneyDelivered:money,ticketDetailsUpdatedAt:updatedAt,ticketDetailsUpdatedBy:actor});closeModal("ticketEditModal");renderAdminData();if(!$("recordModal").hidden)showRecord(id);showToast("Control de boletas actualizado.");}
   catch(saveError){console.error(saveError);error.textContent="No fue posible guardar los cambios.";showToast("No fue posible actualizar las boletas.");}
   finally{setLoading(false);}
 }
@@ -1389,11 +1409,20 @@ function displayRecordValue(value) {
   return String(value);
 }
 
+function recordManualWorkflowControls(record) {
+  const attended=recordAttended(record);const purchased=record.registrationSheetPurchased===true;const tickets=recordTicketsReceived(record);
+  const purchaseDate=purchased?formatDate(record.registrationSheetPurchasedAt,true):"";const purchaseBy=String(record.registrationSheetPurchasedBy||"Administrador");
+  const attendanceAction=attended?'<button class="button button-secondary" type="button" disabled>Asistencia registrada</button>':`<button class="button button-secondary" type="button" data-mark-attendance="${escapeHTML(record.id)}">Registrar asistencia</button>`;
+  const paymentAction=purchased?`<div class="meeting-control-actions"><button class="button button-secondary" type="button" disabled>Pago registrado</button><button class="button button-danger" type="button" data-delete-payment="${escapeHTML(record.id)}">Eliminar pago</button></div>`:`<button class="button button-primary" type="button" data-mark-sheet="${escapeHTML(record.id)}">Registrar pago</button>`;
+  const ticketAction=tickets?`<button class="button button-secondary" type="button" data-edit-ticket="${escapeHTML(record.id)}">Editar boletas</button>`:`<button class="button button-secondary" type="button" data-mark-tickets="${escapeHTML(record.id)}">Registrar boletas</button>`;
+  return `<section class="record-workflow-section" aria-labelledby="recordWorkflowTitle"><div class="record-workflow-heading"><span class="eyebrow green-text">Control manual</span><h3 id="recordWorkflowTitle">Asistencia, pago y boletas</h3><p>Usa estas opciones cuando no sea posible escanear el código QR del carné.</p></div><div class="meeting-control-grid record-workflow-controls"><div class="attendance-confirmation${attended?" is-complete":""}"><span class="purchase-confirmation-icon" aria-hidden="true">${attended?"✓":"○"}</span><div><strong>${attended?"Asistencia confirmada":"Asistencia pendiente"}</strong><p>${attended?`Registrada ${escapeHTML(formatDate(record.meetingAttendedAt||record.registrationSheetPurchasedAt,true))}.`:"Confirma que la persona asistió a la reunión."}</p></div>${attendanceAction}</div><div class="purchase-confirmation${purchased?" is-complete":""}"><span class="purchase-confirmation-icon" aria-hidden="true">${purchased?"✓":"$"}</span><div><strong>${purchased?"Pago de $10.000 confirmado":"Pago de $10.000 pendiente"}</strong><p>${purchased?`Registrado ${escapeHTML(purchaseDate)} por ${escapeHTML(purchaseBy)}.`:"Confirma que la persona pagó la inscripción."}</p></div>${paymentAction}</div><div class="ticket-confirmation${tickets?" is-complete":""}"><span class="purchase-confirmation-icon" aria-hidden="true">${tickets?"✓":"◇"}</span><div><strong>${tickets?"Boletas entregadas":"Boletas pendientes"}</strong><p>${tickets?(record.ticketProgram?`${escapeHTML(record.ticketProgram)} · ${recordTicketsSold(record)} vendidas · ${escapeHTML(formatMoney(recordTicketMoney(record)))} entregado.`:"Entrega confirmada. Completa modalidad, ventas y dinero entregado."):"Confirma que la persona recibió sus boletas."}</p></div>${ticketAction}</div></div></section>`;
+}
+
 function showRecord(id) {
   const record=records.find((item)=>item.id===id);if(!record)return;
   const answerItems=recordAnswerItems(record);
-  const purchased=record.registrationSheetPurchased===true;const attended=recordAttended(record);const photo=safeImage(record.photoData);const purchaseDate=purchased?formatDate(record.registrationSheetPurchasedAt,true):"";const purchaseBy=String(record.registrationSheetPurchasedBy||"Administrador");
-  $("recordDetail").innerHTML=`<div class="record-profile">${photo?`<img src="${photo}" alt="Foto de ${escapeHTML(record.firstName)}">`:`<span class="avatar-placeholder">${escapeHTML(String(record.firstName||"L").charAt(0)+String(record.lastName||"E").charAt(0))}</span>`}<div><span class="eyebrow green-text">Registro ${escapeHTML(id.slice(0,8).toUpperCase())}</span><h2 id="recordModalTitle">${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</h2><div class="record-meta"><span>${escapeHTML(record.age)} años</span><span>${escapeHTML(record.gender)}</span><span>Asesor: ${escapeHTML(record.advisor||"Sin asesor")}</span><span>Reunión: ${escapeHTML(meetingDateLabel(recordMeetingDate(record)))}</span>${workflowStatusBadge(record)}${ticketStatusBadge(record)}</div><p>Registrado: ${escapeHTML(formatDate(record.createdAt,true))}</p></div></div><div class="meeting-control-grid record-workflow-controls"><div class="attendance-confirmation${attended?" is-complete":""}"><span class="purchase-confirmation-icon" aria-hidden="true">${attended?"✓":"○"}</span><div><strong>${attended?"Asistencia confirmada":"Asistencia pendiente"}</strong><p>${attended?`Registrada ${escapeHTML(formatDate(record.meetingAttendedAt||record.registrationSheetPurchasedAt,true))}.`:"Confirma cuando la persona llegue a la reunión."}</p></div>${attended?"":`<button class="button button-secondary" type="button" data-mark-attendance="${escapeHTML(record.id)}">Confirmar asistencia</button>`}</div><div class="purchase-confirmation${purchased?" is-complete":""}"><span class="purchase-confirmation-icon" aria-hidden="true">${purchased?"✓":"$"}</span><div><strong>${purchased?"Pago de $10.000 confirmado":"Pago de $10.000 pendiente"}</strong><p>${purchased?`Registrado ${escapeHTML(purchaseDate)} por ${escapeHTML(purchaseBy)}.`:"Confirma el pago aquí o desde el escáner QR."}</p></div>${purchased?`<button class="button button-danger" type="button" data-delete-payment="${escapeHTML(record.id)}">Eliminar pago</button>`:`<button class="button button-primary" type="button" data-mark-sheet="${escapeHTML(record.id)}">Registrar $10.000</button>`}</div>${recordTicketsReceived(record)?`<div class="ticket-confirmation is-complete"><span class="purchase-confirmation-icon" aria-hidden="true">✓</span><div><strong>Boletas entregadas</strong><p>${record.ticketProgram?`${escapeHTML(record.ticketProgram)} · ${recordTicketsSold(record)} vendidas · ${escapeHTML(formatMoney(recordTicketMoney(record)))} entregado.`:"Completa modalidad, ventas y dinero entregado."}</p></div><button class="button button-secondary" type="button" data-edit-ticket="${escapeHTML(record.id)}">Editar boletas</button></div>`:""}</div><dl class="record-answer-grid">${answerItems.map((item)=>`<div class="record-answer"><dt>${escapeHTML(item.label)}</dt><dd>${escapeHTML(displayRecordValue(item.value))}</dd></div>`).join("")}</dl><div class="record-delete"><div><strong>Eliminar persona</strong><p>Borra el formulario, el carné, la asistencia, el pago y las boletas asociadas.</p></div><button class="button button-danger" type="button" data-delete-record="${escapeHTML(record.id)}">Eliminar registro completo</button></div>`;
+  const photo=safeImage(record.photoData);
+  $("recordDetail").innerHTML=`<div class="record-profile">${photo?`<img src="${photo}" alt="Foto de ${escapeHTML(record.firstName)}">`:`<span class="avatar-placeholder">${escapeHTML(String(record.firstName||"L").charAt(0)+String(record.lastName||"E").charAt(0))}</span>`}<div><span class="eyebrow green-text">Registro ${escapeHTML(id.slice(0,8).toUpperCase())}</span><h2 id="recordModalTitle">${escapeHTML(record.firstName)} ${escapeHTML(record.lastName)}</h2><div class="record-meta"><span>${escapeHTML(record.age)} años</span><span>${escapeHTML(record.gender)}</span><span>Asesor: ${escapeHTML(record.advisor||"Sin asesor")}</span><span>Reunión: ${escapeHTML(meetingDateLabel(recordMeetingDate(record)))}</span>${workflowStatusBadge(record)}${ticketStatusBadge(record)}</div><p>Registrado: ${escapeHTML(formatDate(record.createdAt,true))}</p></div></div>${recordManualWorkflowControls(record)}<dl class="record-answer-grid">${answerItems.map((item)=>`<div class="record-answer"><dt>${escapeHTML(item.label)}</dt><dd>${escapeHTML(displayRecordValue(item.value))}</dd></div>`).join("")}</dl><div class="record-delete"><div><strong>Eliminar persona</strong><p>Borra el formulario, el carné, la asistencia, el pago y las boletas asociadas.</p></div><button class="button button-danger" type="button" data-delete-record="${escapeHTML(record.id)}">Eliminar registro completo</button></div>`;
   openModal("recordModal");
 }
 
@@ -1403,6 +1432,32 @@ async function deleteRecord(id) {
   setLoading(true,"Eliminando registro…");
   try{if(!IS_DEMO)await db.collection("inscripciones_personal").doc(id).delete();records=records.filter((item)=>item.id!==id);if(scannerRecordId===id){scannerRecordId="";scannerSelectionRecordId="";scannerSelections=new Set();$("scannerResult").innerHTML='<div class="scanner-result-empty"><span aria-hidden="true">⌕</span><h3>Registro eliminado</h3><p>Escanea otro código para continuar.</p></div>';}renderAdminData();closeModal("recordModal");showToast("Registro completo eliminado.");}
   catch(error){console.error(error);showToast("No se pudo eliminar el registro.");}finally{setLoading(false);}
+}
+
+function recordsForDeletionDate(value=$("recordDeleteDate")?.value||"") {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value)?records.filter((record)=>recordRegistrationDate(record)===value):[];
+}
+
+function updateRecordDateDeleteControl() {
+  const input=$("recordDeleteDate");const button=$("deleteRecordsByDateButton");const summary=$("recordDeleteDateSummary");if(!input||!button||!summary)return;
+  const value=input.value;const matches=recordsForDeletionDate(value);button.disabled=!value||matches.length===0||dateDeleteRunning;button.textContent=matches.length?`Eliminar ${matches.length} ${matches.length===1?"registro":"registros"}`:"Eliminar por fecha";
+  summary.textContent=!value?"Selecciona la fecha exacta en que fueron registrados.":matches.length?`${matches.length} ${matches.length===1?"registro será eliminado":"registros serán eliminados"} de esta fecha.`:"No hay registros creados en la fecha seleccionada.";
+}
+
+async function deleteRecordsByDate() {
+  if(dateDeleteRunning)return;const dateValue=$("recordDeleteDate").value;const targets=recordsForDeletionDate(dateValue);
+  if(!dateValue){showToast("Selecciona primero una fecha de registro.");return;}if(!targets.length){showToast("No hay registros creados en esa fecha.");updateRecordDateDeleteControl();return;}
+  const label=meetingDateLabel(dateValue);const accepted=await confirmDialog(`¿Eliminar ${targets.length} ${targets.length===1?"registro creado":"registros creados"} el ${label}? También se borrarán sus carnés, asistencias, pagos y controles de boletas.`,{title:"Eliminar registros por fecha",acceptText:"Eliminar esta fecha",danger:true});if(!accepted)return;
+  dateDeleteRunning=true;updateRecordDateDeleteControl();setLoading(true,"Eliminando registros de la fecha seleccionada…");let deletedCount=0;
+  try {
+    if(IS_DEMO)deletedCount=targets.length;
+    else {
+      for(let index=0;index<targets.length;index+=400){const group=targets.slice(index,index+400);const batch=db.batch();group.forEach((record)=>batch.delete(db.collection("inscripciones_personal").doc(record.id)));await batch.commit();deletedCount+=group.length;setText("loadingText",`Eliminando registros… ${deletedCount} completados`);}
+    }
+    const deletedIds=new Set(targets.map((record)=>record.id));records=records.filter((record)=>!deletedIds.has(record.id));if(deletedIds.has(scannerRecordId)){scannerRecordId="";scannerSelectionRecordId="";scannerSelections=new Set();$("scannerResult").innerHTML='<div class="scanner-result-empty"><span aria-hidden="true">⌕</span><h3>Registros eliminados</h3><p>Escanea otro código para continuar.</p></div>';}
+    $("recordDeleteDate").value="";closeModal("recordModal");closeModal("ticketEditModal");renderAdminData();showToast(`${deletedCount} ${deletedCount===1?"registro eliminado":"registros eliminados"} del ${label}.`);
+  } catch(error){console.error(error);renderAdminData();showToast(deletedCount?`Se eliminaron ${deletedCount} registros, pero no fue posible completar el proceso.`:"No fue posible eliminar los registros de esa fecha.");}
+  finally{dateDeleteRunning=false;setLoading(false);renderAdminData();}
 }
 
 function openBulkDeleteModal() {
@@ -1613,13 +1668,14 @@ function attachEvents() {
   $("startQrScannerButton").addEventListener("click",startQrScanner);$("stopQrScannerButton").addEventListener("click",()=>{stopQrScanner();setScannerStatus("Cámara detenida.");});$("qrScannerImageInput").addEventListener("change",scanQrImage);
   $("scannerManualForm").addEventListener("submit",async(event)=>{event.preventDefault();stopQrScanner();await findScannerRecord($("scannerManualInput").value);});
   $("recordSearch").addEventListener("input",renderRecords);$("recordMeetingFilter").addEventListener("change",renderRecords);$("advisorFilter").addEventListener("change",renderRecords);$("recordStatusFilter").addEventListener("change",renderRecords);$("paymentSearch").addEventListener("input",renderPaymentTable);$("paymentMeetingFilter").addEventListener("change",renderPayments);$("paymentAdvisorFilter").addEventListener("change",renderPaymentTable);$("paymentStatusFilter").addEventListener("change",renderPaymentTable);$("paymentTicketsFilter").addEventListener("change",renderPaymentTable);$("ticketSearch").addEventListener("input",renderTicketTable);$("ticketMeetingFilter").addEventListener("change",renderTickets);$("ticketAdvisorFilter").addEventListener("change",renderTicketTable);$("ticketProgramFilter").addEventListener("change",renderTicketTable);$("ticketEditForm").addEventListener("submit",saveTicketDetails);$("dateReportForm").addEventListener("submit",(event)=>{event.preventDefault();renderDateReport();});$("reportTodayButton").addEventListener("click",()=>setDateReportRange(1));$("reportWeekButton").addEventListener("click",()=>setDateReportRange(7));$("contentForm").addEventListener("submit",saveContent);$("restoreDefaultContentButton").addEventListener("click",restoreDefaultContent);$("addQuestionButton").addEventListener("click",()=>openQuestionEditor());$("questionType").addEventListener("change",toggleQuestionOptions);$("questionForm").addEventListener("submit",saveQuestion);
-  $("bulkDeletePhrase").addEventListener("input",updateBulkDeleteConfirmation);$("bulkDeleteForm").addEventListener("submit",deleteAllRecords);
+  $("bulkDeletePhrase").addEventListener("input",updateBulkDeleteConfirmation);$("bulkDeleteForm").addEventListener("submit",deleteAllRecords);$("recordDeleteDate").addEventListener("change",updateRecordDateDeleteControl);$("deleteRecordsByDateButton").addEventListener("click",deleteRecordsByDate);
   $("addAdvisorButton").addEventListener("click",()=>openAdvisorEditor());$("advisorForm").addEventListener("submit",saveAdvisor);$("advisorWhatsapp").addEventListener("input",(event)=>{event.target.value=event.target.value.replace(/\D/g,"");});$("addInvitationCodeButton").addEventListener("click",()=>openInvitationCodeEditor());$("invitationCodeForm").addEventListener("submit",saveInvitationCode);$("generateInvitationCodeButton").addEventListener("click",fillGeneratedInvitationCode);$("invitationCodeValue").addEventListener("input",(event)=>{event.target.value=normalizeInvitationCode(event.target.value);});$("copyInvitationCodeButton").addEventListener("click",copyRevealedInvitationCode);
   document.addEventListener("click",(event)=>{
     const close=event.target.closest("[data-close-modal]");if(close)closeModal(close.dataset.closeModal);
     const view=event.target.closest("[data-view-record]");if(view)showRecord(view.dataset.viewRecord);
     const markAttendance=event.target.closest("[data-mark-attendance]");if(markAttendance&&!markAttendance.disabled)markMeetingAttendance(markAttendance.dataset.markAttendance);
     const markSheet=event.target.closest("[data-mark-sheet]");if(markSheet&&!markSheet.disabled)markRegistrationSheetPurchased(markSheet.dataset.markSheet);
+    const markTickets=event.target.closest("[data-mark-tickets]");if(markTickets&&!markTickets.disabled)markTicketsReceived(markTickets.dataset.markTickets);
     const scannerStatus=event.target.closest("[data-scanner-status]");if(scannerStatus&&!scannerStatus.disabled)toggleScannerSelection(scannerStatus.dataset.recordId,scannerStatus.dataset.scannerStatus);
     const saveScannerStatus=event.target.closest("[data-save-scanner-status]");if(saveScannerStatus&&!saveScannerStatus.disabled)saveScannerSelections(saveScannerStatus.dataset.saveScannerStatus);
     const removePayment=event.target.closest("[data-delete-payment]");if(removePayment)deleteRegistrationPayment(removePayment.dataset.deletePayment);
